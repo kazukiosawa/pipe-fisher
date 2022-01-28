@@ -554,7 +554,7 @@ def convert_example_to_features(example, max_seq_length, tokenizer):
     tokens.append("[SEP]")
     segment_ids.append(0)
 
-    assert len(tokens_b) > 0
+    #assert len(tokens_b) > 0, "empty tokens_b"
     for token in tokens_b:
         tokens.append(token)
         segment_ids.append(1)
