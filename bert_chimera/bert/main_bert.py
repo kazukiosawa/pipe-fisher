@@ -1393,7 +1393,7 @@ def main():
 
                 #distrib.barrier()
                 if epoch != 0 and args.rank == 0:
-                    print("Rank = ", args.rank, "epoch: ", epoch, ", Finish one epoch by dpp.", "Number of update steps: ", (n/r.update_interval-1), " Average time per update step: ", (time.time()-epoch_start_time)/(n/r.update_interval-1))
+                    print("Rank = ", args.rank, "epoch: ", epoch, ", Finish one epoch by Chimera.", "Number of update steps: ", (n/r.update_interval-1), " Average time per update step: ", (time.time()-epoch_start_time)/(n/r.update_interval-1))
 
             else:
                 recompute_step = args.recompute_step and r.stage is not None and \
