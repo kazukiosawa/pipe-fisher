@@ -705,7 +705,8 @@ class StageRuntime:
 
     def _print_training_progress(self, step, n, start_time, epoch_start_time,
                                  loss, cumulative_loss, rank=-1):
-        if self.is_last_stage():
+        #if self.is_last_stage():
+        if rank == self.num_ranks -1:
             print("Step [%d/%d], Rank = %d, Time/iteration: %.3f seconds (%.3f seconds), Loss: %.3f (%.3f), Memory: %.3f GB (%.3f GB)" % (
                 (step + 1), n, rank,
                 (time.time() - start_time) / self.update_interval,
@@ -715,15 +716,15 @@ class StageRuntime:
                 float(torch.cuda.max_memory_reserved()) / 10**9))
                 #float(torch.cuda.memory_allocated()) / 10**9,
                 #float(torch.cuda.memory_cached()) / 10**9))
-        else:
-            print("Step [%d/%d], Rank = %d, Time/iteration: %.3f seconds (%.3f seconds), Memory: %.3f GB (%.3f GB)" % (
-                (step + 1), n, rank,
-                (time.time() - start_time) / self.update_interval,
-                (time.time() - epoch_start_time) / (step + 1),
-                float(torch.cuda.max_memory_allocated()) / 10**9,
-                float(torch.cuda.max_memory_reserved()) / 10**9))
-                #float(torch.cuda.memory_allocated()) / 10**9,
-                #float(torch.cuda.memory_cached()) / 10**9))
+        #else:
+        #    print("Step [%d/%d], Rank = %d, Time/iteration: %.3f seconds (%.3f seconds), Memory: %.3f GB (%.3f GB)" % (
+        #        (step + 1), n, rank,
+        #        (time.time() - start_time) / self.update_interval,
+        #        (time.time() - epoch_start_time) / (step + 1),
+        #        float(torch.cuda.max_memory_allocated()) / 10**9,
+        #        float(torch.cuda.max_memory_reserved()) / 10**9))
+        #        #float(torch.cuda.memory_allocated()) / 10**9,
+        #        #float(torch.cuda.memory_cached()) / 10**9))
 
     def run_training_loop_with_1f1b_flushes(self, n, optimizer, recompute_step):
         cumulative_loss = []
