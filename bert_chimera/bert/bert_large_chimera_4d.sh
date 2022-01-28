@@ -7,7 +7,7 @@
 #SBATCH --partition=normal
 #SBATCH --time=00:30:00
 #SBATCH --account=g34
-#SBATCH --output=bert_large_chimera_16b_4w4d.txt
+#SBATCH --output=bert_large_chimera_16b_4w4d_1.txt
 
 
 module load daint-gpu
@@ -52,5 +52,5 @@ srun python main_bert.py \
         --vocab_path ./bert_dataset/bert-large-uncased-vocab.txt \
         --do_train \
         --do_lower_case \
-        --num_minibatches 128 \
+        --num_minibatches 256 \
         --gradient_accumulation_steps 1 --chimera --config_path tests/depth=4/conf_16nodes.json --reverse_config_path tests/depth=4/conf_reverse_pipe_16nodes.json

@@ -705,8 +705,7 @@ class StageRuntime:
 
     def _print_training_progress(self, step, n, start_time, epoch_start_time,
                                  loss, cumulative_loss, rank=-1):
-        #if self.is_last_stage():
-        if rank == self.num_ranks -1:
+        if self.is_last_stage() and (rank == self.num_ranks -1):
             print("Step [%d/%d], Rank = %d, Time/iteration: %.3f seconds (%.3f seconds), Loss: %.3f (%.3f), Memory: %.3f GB (%.3f GB)" % (
                 (step + 1), n, rank,
                 (time.time() - start_time) / self.update_interval,
