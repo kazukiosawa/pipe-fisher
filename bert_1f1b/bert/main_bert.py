@@ -706,7 +706,7 @@ def main():
     parser.add_argument('--gpipe', action='store_true',
                         help='Use GPipe-style weight updates')
     parser.add_argument('--oneFoneB', action='store_true',
-                        help='Use Dapple-style weight updates')
+                        help='Use 1f1b-style weight updates')
 
     parser.add_argument('--seed',
                         type=int,
