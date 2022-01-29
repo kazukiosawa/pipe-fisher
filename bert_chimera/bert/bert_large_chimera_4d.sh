@@ -7,7 +7,7 @@
 #SBATCH --partition=normal
 #SBATCH --time=00:30:00
 #SBATCH --account=g34
-#SBATCH --output=bert_large_chimera_16b_4w4d_1.txt
+#SBATCH --output=bert_large_chimera_16b_4w4d.txt
 
 
 module load daint-gpu
