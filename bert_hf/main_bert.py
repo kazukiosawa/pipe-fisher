@@ -113,16 +113,12 @@ def train_one_epoch_with_1f1b(epoch, num_steps_for_this_epoch):
         # start 1F1B pipeline
         for _ in range(num_warmup_steps):
             stage.call_forward(next_batch())
-
         for _ in range(num_micro_batches_per_step - num_warmup_steps - 1):
             stage.call_forward(next_batch())
             stage.call_backward()
-
         stage.call_forward(next_batch())
-
         for _ in range(num_warmup_steps):
             stage.call_backward()
-
         stage.call_backward()
         # end 1F1B pipeline
 
