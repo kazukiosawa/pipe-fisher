@@ -135,34 +135,3 @@ class PipelineStage:
         dist.all_reduce(packed_tensor, group=self.grad_sync_group)
         packed_tensor /= self.grad_sync_group.size()
         vector_to_parameters(packed_tensor, grads)
-
-    def train_one_epoch_with_1f1b(self,
-                                  train_loader: DataLoader,
-                                  optimizer: torch.optim.Optimizer,
-                                  num_optimization_steps: int,
-                                  num_micro_batches_per_step: int):
-        self.stage_module.train()
-        num_warmup_steps = self.num_stages - self.stage_id - 1
-        input_source = iter(train_loader)
-
-        for _ in range(num_optimization_steps):
-            optimizer.zero_grad()
-
-            for _ in range(num_warmup_steps):
-                self.call_forward(next(input_source))
-
-            for _ in range(num_micro_batches_per_step - num_warmup_steps - 1):
-                self.call_forward(next(input_source))
-                self.call_backward()
-
-            self.call_forward(next(input_source))
-
-            for _ in range(num_warmup_steps):
-                self.call_backward()
-
-            self.call_backward()
-
-            if self.grad_sync_group is not None:
-                self.sync_grad()
-
-            optimizer.step()
