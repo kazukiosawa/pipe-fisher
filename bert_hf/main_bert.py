@@ -14,7 +14,7 @@ import torch.distributed as dist
 from transformers import BertTokenizer, BertConfig
 
 from pipeline import PipelineStage
-from comm_utils import init_dist_process_group
+from utils import init_dist_process_group
 from bert_optim import BertAdam
 from bert_dataset import BERTDataset
 from bert_model import get_stage_bert_for_pretraining
