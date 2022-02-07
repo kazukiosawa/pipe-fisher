@@ -131,6 +131,7 @@ class PipelineStage:
 
     def sync_grad(self):
         assert self.grad_sync_group is not None, 'grad_sync_group is not specified.'
+        dist.barrier(group=self.grad_sync_group)
         grads = [p.grad for p in self.stage_module.parameters() if p.grad is not None]
         packed_tensor = parameters_to_vector(grads)
         dist.all_reduce(packed_tensor, group=self.grad_sync_group)
