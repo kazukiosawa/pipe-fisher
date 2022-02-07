@@ -112,7 +112,7 @@ class PipelineStage:
             self.inputs[key] = torch.zeros(size, device=self.device)
 
     def _init_output_grads(self):
-        for key, tensor in self.outputs:
+        for key, tensor in self.outputs.items():
             self.output_grads[key] = torch.zeros_like(tensor)
 
     def _receive_inputs(self):
