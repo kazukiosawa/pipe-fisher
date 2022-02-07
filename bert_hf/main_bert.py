@@ -176,8 +176,12 @@ if __name__ == "__main__":
 
     # Prepare BERT dataset
     tokenizer = BertTokenizer(args.vocab_path, do_lower_case=args.do_lower_case)
-    train_dataset = BERTDataset(args.corpus_path, tokenizer, seq_len=args.max_seq_length,
-                                corpus_lines=args.corpus_lines, on_memory=args.on_memory)
+    train_dataset = BERTDataset(args.corpus_path,
+                                tokenizer,
+                                seq_len=args.max_seq_length,
+                                corpus_lines=args.corpus_lines,
+                                encoding='latin-1',
+                                on_memory=args.on_memory)
     num_replicas = num_ranks_per_stage
     if num_replicas > 1:
         rank_in_stage = rank % num_ranks_per_stage
