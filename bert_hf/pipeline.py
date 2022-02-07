@@ -140,6 +140,8 @@ class PipelineStage:
 
     def call_1f1b_pipeline(self, data_iterator: Iterator, num_micro_batches):
         num_warmup_steps = self.num_stages - self.stage_id - 1
+        self.total_loss = 0.
+        assert len(self.input_output_queue) == 0
 
         for _ in range(num_warmup_steps):
             self.call_forward(next(data_iterator))
@@ -150,3 +152,9 @@ class PipelineStage:
         for _ in range(num_warmup_steps):
             self.call_backward()
         self.call_backward()
+
+        assert len(self.input_output_queue) == 0
+        if self.grad_sync_group is not None:
+            self.sync_grad()
+
+        return self.total_loss

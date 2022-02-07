@@ -102,18 +102,13 @@ def train_one_epoch(epoch, num_steps_for_this_epoch):
 
     for i in range(num_steps_for_this_epoch):
         dist.barrier()
-        assert len(stage.input_output_queue) == 0
-        stage.total_loss = 0.
         optimizer.zero_grad()
 
-        call_pipeline(train_iterator, num_micro_batches_per_step)
+        loss = call_pipeline(train_iterator, num_micro_batches_per_step)
 
-        assert len(stage.input_output_queue) == 0
-        if stage.grad_sync_group is not None:
-            stage.sync_grad()
         optimizer.step()
 
-        tensor = torch.tensor(stage.total_loss, device=stage.device)
+        tensor = torch.tensor(loss, device=stage.device)
         dist.reduce(tensor, dst=0)
         tensor /= (num_replicas * num_micro_batches_per_step)
         if is_master:
