@@ -92,7 +92,7 @@ class PipelineStage:
             for tensor in outputs.values():
                 tensor.grad = torch.zeros_like(tensor)
             self._receive_output_grads(outputs)
-            grad_tensors = tuple(tensor.grad for tensor in outputs)
+            grad_tensors = tuple(tensor.grad for tensor in outputs.values())
             assert len(out_tensors) == len(grad_tensors), 'output_grads are not set yet.'
 
         torch.autograd.backward(out_tensors, grad_tensors=grad_tensors)
