@@ -103,8 +103,7 @@ def main():
     stage = PipelineStage(stage_id=stage_id,
                           num_stages=args.num_stages,
                           stage_module=stage_module,
-                          batch_size=args.micro_batch_size,
-                          max_seq_length=args.max_seq_length,
+                          batch_dims=2,  # batch_size, max_seq_length
                           prev_rank=rank-num_ranks_per_stage if stage_id > 0 else None,
                           next_rank=rank+num_ranks_per_stage if stage_id < args.num_stages-1 else None,
                           grad_sync_group=grad_sync_group)
