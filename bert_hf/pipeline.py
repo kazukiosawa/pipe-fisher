@@ -100,6 +100,8 @@ class PipelineStage:
         if not self.is_first_stage:
             self._send_input_grads(inputs)
 
+        del inputs, outputs
+
     def _get_zero_inputs(self, input_source):
         batch_size = tuple(input_source[0].shape[:self.num_batch_dims])
         inputs = collections.OrderedDict()
