@@ -1,11 +1,11 @@
-from collections import OrderedDict, deque
-from typing import List, Tuple, Deque
+import collections
+from collections import deque
+from typing import List, Tuple, Deque, OrderedDict
 
 import torch
 from torch import Tensor
 from torch import nn
 from torch.nn.utils import parameters_to_vector, vector_to_parameters
-from torch.utils.data import DataLoader
 import torch.distributed as dist
 
 
@@ -24,7 +24,7 @@ class PipelineStage:
                  stage_id: int,
                  num_stages: int,
                  stage_module: StageModule,
-                 batch_dims: int = 1,
+                 num_batch_dims: int = 1,
                  prev_rank: int = None,
                  next_rank: int = None,
                  grad_sync_group: dist.ProcessGroup = None):
@@ -34,7 +34,7 @@ class PipelineStage:
         self.stage_id = stage_id
         self.num_stages = num_stages
         self.stage_module = stage_module
-        self.batch_dims = batch_dims
+        self.num_batch_dims = num_batch_dims
         self.input_output_queue: Deque[Tuple[OrderedDict[str, Tensor], OrderedDict[str, Tensor]]] = deque()
         self.grad_sync_group = grad_sync_group
         self.prev_rank = prev_rank
@@ -101,8 +101,8 @@ class PipelineStage:
             self._send_input_grads(inputs)
 
     def _get_zero_inputs(self, input_source):
-        batch_size = tuple(input_source.shape[:self.batch_dims])
-        inputs = OrderedDict()
+        batch_size = tuple(input_source[0].shape[:self.num_batch_dims])
+        inputs = collections.OrderedDict()
         for key, size in self.keys_and_sizes_from_prev_stage:
             size = batch_size + size
             inputs[key] = torch.zeros(size, device=self.device, requires_grad=True)
