@@ -62,7 +62,7 @@ class PipelineStage:
     def keys_from_prev_stage(self):
         return [v[0] for v in self.keys_and_sizes_from_prev_stage]
 
-    def call_forward(self, input_source):
+    def call_forward(self, input_source: OrderedDict[str, Tensor]):
         if not self.is_first_stage:
             inputs = self._get_zero_inputs(input_source)
             self._receive_inputs(inputs)
@@ -102,8 +102,8 @@ class PipelineStage:
 
         del inputs, outputs
 
-    def _get_zero_inputs(self, input_source):
-        batch_size = tuple(input_source[0].shape[:self.num_batch_dims])
+    def _get_zero_inputs(self, input_source: OrderedDict[str, Tensor]):
+        batch_size = tuple(next(iter(input_source.values())).shape[:self.num_batch_dims])
         inputs = collections.OrderedDict()
         for key, size in self.keys_and_sizes_from_prev_stage:
             inputs[key] = torch.zeros(batch_size + size, device=self.device, requires_grad=True)
