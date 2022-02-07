@@ -93,6 +93,9 @@ def main():
             torch.save(state, ckpt_file_path)
             print(f'Saved checkpoint to {ckpt_file_path}')
 
+    if is_master:
+        print('Finished.')
+
 
 def train_one_epoch_with_1f1b(epoch):
     stage.stage_module.train()
