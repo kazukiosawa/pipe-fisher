@@ -123,7 +123,7 @@ def train_one_epoch_with_1f1b(epoch):
 
         optimizer.step()
 
-        tensor = torch.tensor(stage.total_loss)
+        tensor = torch.tensor(stage.total_loss, device=stage.device)
         dist.reduce(tensor, dst=0)
         tensor /= (world_size * num_micro_batches_per_step)
         if is_master:
