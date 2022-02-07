@@ -79,7 +79,7 @@ def main():
 
         steps_for_this_epoch = min(num_steps - steps, max_steps_per_epoch)
         if args.pipeline_method == PIPELINE_1F1B:
-            train_one_epoch_with_1f1b(epoch)
+            train_one_epoch_with_1f1b(epoch, steps_for_this_epoch)
         else:
             raise ValueError(f'Invalid pipeline_method: {args.pipeline_method}')
         steps += steps_for_this_epoch
@@ -99,12 +99,12 @@ def main():
         print('Finished.')
 
 
-def train_one_epoch_with_1f1b(epoch):
+def train_one_epoch_with_1f1b(epoch, num_steps_for_this_epoch):
     stage.stage_module.train()
     num_warmup_steps = stage.num_stages - stage.stage_id - 1
     next_batch = get_data_fetch_fn(train_loader)
 
-    for i in range(num_steps):
+    for i in range(num_steps_for_this_epoch):
         dist.barrier()
         assert len(stage.input_output_queue) == 0
         stage.total_loss = 0.
