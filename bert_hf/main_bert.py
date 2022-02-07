@@ -83,13 +83,11 @@ def main():
     # Setup stage_id based on rank
     assert world_size % args.num_stages == 0
     num_ranks_per_stage = int(world_size / args.num_stages)
+    stage_id = rank // num_ranks_per_stage
     stage_to_ranks_map = {_stage_id: [] for _stage_id in range(args.num_stages)}
-    stage_id = -1
     for _rank in range(world_size):
         _stage_id = _rank // num_ranks_per_stage
         stage_to_ranks_map[_stage_id].append(_rank)
-        if rank == _rank:
-            stage_id = _stage_id
     is_stage_master = rank % num_ranks_per_stage == 0
 
     # Prepare BERT pipeline stage
