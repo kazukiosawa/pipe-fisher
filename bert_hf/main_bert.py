@@ -62,6 +62,7 @@ parser.add_argument('--checkpoint_dir', default=None, type=str,
 parser.add_argument('--seed', type=int, default=1,
                     help="random seed for initialization")
 parser.add_argument('--dist_backend', default='nccl', type=str)
+parser.add_argument('--num_workers', default=4, type=int)
 
 
 def main():
@@ -117,7 +118,8 @@ def main():
     train_loader = DataLoader(train_dataset,
                               sampler=train_sampler,
                               batch_size=args.micro_batch_size,
-                              drop_last=True)
+                              drop_last=True,
+                              num_workers=args.num_workers)
 
     # Set the number of optimization steps and epochs
     num_micro_batches_per_step = args.num_stages * args.gradient_accumulation_steps
