@@ -2,6 +2,7 @@ import argparse
 import os
 import random
 import math
+import logging
 
 import numpy as np
 import torch
@@ -17,6 +18,9 @@ from comm_utils import init_dist_process_group
 from bert_optim import BertAdam
 from bert_dataset import BERTDataset
 from bert_model import get_stage_bert_for_pretraining
+
+
+logging.basicConfig(format='%(asctime)s - %(message)s', level=logging.INFO)
 
 
 PIPELINE_1F1B = '1f1b'
@@ -73,7 +77,7 @@ def main():
     device = torch.cuda.current_device()
     assert world_size > 1
     is_master = rank == 0
-    print(f'world_rank: {rank}/{world_size} local_rank: {local_rank}/{local_size} device: {device}')
+    logging.info(f'world_rank: {rank}/{world_size} local_rank: {local_rank}/{local_size} device: {device}')
 
     # Set random seed
     random.seed(args.seed)
