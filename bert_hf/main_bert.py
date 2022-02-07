@@ -111,7 +111,8 @@ def main():
                                 corpus_lines=args.corpus_lines, on_memory=args.on_memory)
     num_replicas = num_ranks_per_stage
     if num_replicas > 1:
-        train_sampler = DistributedSampler(train_dataset, num_replicas=num_replicas, rank=rank)
+        rank_in_stage = rank % num_ranks_per_stage
+        train_sampler = DistributedSampler(train_dataset, num_replicas=num_replicas, rank=rank_in_stage)
     else:
         train_sampler = None
     train_loader = DataLoader(train_dataset,
