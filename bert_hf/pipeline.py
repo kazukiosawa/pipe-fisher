@@ -1,6 +1,6 @@
 import collections
 from collections import deque
-from typing import List, Tuple, Deque, OrderedDict
+from typing import List, Tuple, Deque, OrderedDict, Iterator
 
 import torch
 from torch import Tensor
@@ -137,3 +137,16 @@ class PipelineStage:
         dist.all_reduce(packed_tensor, group=self.grad_sync_group)
         packed_tensor /= self.grad_sync_group.size()
         vector_to_parameters(packed_tensor, grads)
+
+    def call_1f1b_pipeline(self, data_iterator: Iterator, num_micro_batches):
+        num_warmup_steps = self.num_stages - self.stage_id - 1
+
+        for _ in range(num_warmup_steps):
+            self.call_forward(next(data_iterator))
+        for _ in range(num_micro_batches - num_warmup_steps - 1):
+            self.call_forward(next(data_iterator))
+            self.call_backward()
+        self.call_forward(next(data_iterator))
+        for _ in range(num_warmup_steps):
+            self.call_backward()
+        self.call_backward()
