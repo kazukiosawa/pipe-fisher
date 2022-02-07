@@ -14,7 +14,7 @@ import torch.distributed as dist
 from transformers import BertTokenizer, BertConfig
 
 from pipeline import PipelineStage
-from utils import init_dist_process_group
+from utils import init_dist_process_group, get_data_fetch_fn
 from bert_optim import BertAdam
 from bert_dataset import BERTDataset
 from bert_model import get_stage_bert_for_pretraining
@@ -100,7 +100,7 @@ def main():
 def train_one_epoch_with_1f1b(epoch):
     stage.stage_module.train()
     num_warmup_steps = stage.num_stages - stage.stage_id - 1
-    input_source = iter(train_loader)
+    next_batch = get_data_fetch_fn(train_loader)
 
     for i in range(num_steps):
         dist.barrier()
@@ -108,13 +108,13 @@ def train_one_epoch_with_1f1b(epoch):
         optimizer.zero_grad()
 
         for _ in range(num_warmup_steps):
-            stage.call_forward(next(input_source))
+            stage.call_forward(next_batch())
 
         for _ in range(num_micro_batches_per_step - num_warmup_steps - 1):
-            stage.call_forward(next(input_source))
+            stage.call_forward(next_batch())
             stage.call_backward()
 
-        stage.call_forward(next(input_source))
+        stage.call_forward(next_batch())
 
         for _ in range(num_warmup_steps):
             stage.call_backward()

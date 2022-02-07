@@ -1,5 +1,6 @@
 import os
 import torch.distributed as dist
+from torch.utils.data import DataLoader
 
 DEFAULT_MASTER_ADDR = '127.0.0.1'
 DEFAULT_MASTER_PORT = '1234'
@@ -40,3 +41,15 @@ def init_dist_process_group(backend='nccl', is_high_priority=True):
         assert dist.get_world_size() == world_size
 
     return local_rank, local_size, world_rank, world_size
+
+
+def get_data_fetch_fn(loader: DataLoader):
+    fetcher = iter(loader)
+
+    def next_batch():
+        try:
+            return next(fetcher)
+        except StopIteration:
+            return None
+
+    return next_batch
