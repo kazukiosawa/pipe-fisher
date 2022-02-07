@@ -70,6 +70,69 @@ parser.add_argument('--num_workers', default=4, type=int)
 
 
 def main():
+    steps = 0
+    for epoch in range(num_epochs):
+        dist.barrier()
+        if num_replicas > 1:
+            # deterministically shuffle based on epoch
+            train_loader.sampler.set_epoch(epoch)
+
+        steps_for_this_epoch = min(num_steps - steps, max_steps_per_epoch)
+        if args.pipeline_method == PIPELINE_1F1B:
+            train_one_epoch_with_1f1b(epoch)
+        steps += steps_for_this_epoch
+
+        if args.checkpoint_dir is not None and is_stage_master:
+            state = {
+                'epoch': epoch + 1,
+                'state_dict': stage_module.state_dict(),
+                'optimizer': optimizer.state_dict(),
+            }
+            assert os.path.isdir(args.checkpoint_dir)
+            ckpt_file_path = os.path.join(args.checkpoint_dir, f'epoch{epoch+1}_stage{stage_id}.pt')
+            torch.save(state, ckpt_file_path)
+            print(f'Saved checkpoint to {ckpt_file_path}')
+
+
+def train_one_epoch_with_1f1b(epoch):
+    stage.stage_module.train()
+    num_warmup_steps = stage.num_stages - stage.stage_id - 1
+    input_source = iter(train_loader)
+
+    for i in range(num_steps):
+        dist.barrier()
+        stage.total_loss = 0.
+        optimizer.zero_grad()
+
+        for _ in range(num_warmup_steps):
+            stage.call_forward(next(input_source))
+
+        for _ in range(num_micro_batches_per_step - num_warmup_steps - 1):
+            stage.call_forward(next(input_source))
+            stage.call_backward()
+
+        stage.call_forward(next(input_source))
+
+        for _ in range(num_warmup_steps):
+            stage.call_backward()
+
+        stage.call_backward()
+
+        if stage.grad_sync_group is not None:
+            stage.sync_grad()
+
+        optimizer.step()
+
+        tensor = torch.tensor(stage.total_loss)
+        dist.reduce(tensor, dst=0)
+        tensor /= (world_size * num_micro_batches_per_step)
+        if is_master:
+            print(f'epoch{epoch+1} step{i} loss = {float(tensor)}')
+
+
+if __name__ == "__main__":
+    args = parser.parse_args()
+
     # Setup rank and device
     local_rank, local_size, rank, world_size = init_dist_process_group(backend=args.dist_backend)
     assert local_size <= torch.cuda.device_count()
@@ -103,7 +166,7 @@ def main():
     stage = PipelineStage(stage_id=stage_id,
                           num_stages=args.num_stages,
                           stage_module=stage_module,
-                          batch_dims=2,  # batch_size, max_seq_length
+                          num_batch_dims=2,  # batch_size, max_seq_length
                           prev_rank=rank-num_ranks_per_stage if stage_id > 0 else None,
                           next_rank=rank+num_ranks_per_stage if stage_id < args.num_stages-1 else None,
                           grad_sync_group=grad_sync_group)
@@ -168,37 +231,4 @@ def main():
             print(f'{key}: {value}')
         print('============================')
 
-    steps = 0
-    for epoch in range(num_epochs):
-        if is_master:
-            print('epoch', epoch + 1)
-
-        dist.barrier()
-        if num_replicas > 1:
-            # deterministically shuffle based on epoch
-            train_loader.sampler.set_epoch(epoch)
-
-        steps_for_this_epoch = min(num_steps - steps, max_steps_per_epoch)
-        if args.pipeline_method == PIPELINE_1F1B:
-            stage.train_one_epoch_with_1f1b(train_loader=train_loader,
-                                            optimizer=optimizer,
-                                            num_optimization_steps=steps_for_this_epoch,
-                                            num_micro_batches_per_step=num_micro_batches_per_step)
-        steps += steps_for_this_epoch
-        dist.barrier()
-
-        if args.checkpoint_dir is not None and is_stage_master:
-            state = {
-                'epoch': epoch + 1,
-                'state_dict': stage_module.state_dict(),
-                'optimizer': optimizer.state_dict(),
-            }
-            assert os.path.isdir(args.checkpoint_dir)
-            ckpt_file_path = os.path.join(args.checkpoint_dir, f'epoch{epoch+1}_stage{stage_id}.pt')
-            torch.save(state, ckpt_file_path)
-            print(f'Saved checkpoint to {ckpt_file_path}')
-
-
-if __name__ == "__main__":
-    args = parser.parse_args()
     main()
