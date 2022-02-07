@@ -106,8 +106,7 @@ class PipelineStage:
         batch_size = tuple(input_source[0].shape[:self.num_batch_dims])
         inputs = collections.OrderedDict()
         for key, size in self.keys_and_sizes_from_prev_stage:
-            size = batch_size + size
-            inputs[key] = torch.zeros(size, device=self.device, requires_grad=True)
+            inputs[key] = torch.zeros(batch_size + size, device=self.device, requires_grad=True)
         return inputs
 
     def _receive_inputs(self, inputs: OrderedDict[str, Tensor]):
