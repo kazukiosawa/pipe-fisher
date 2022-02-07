@@ -77,6 +77,7 @@ def main():
     torch.cuda.set_device(local_rank)
     device = torch.cuda.current_device()
     assert world_size > 1
+    is_master = rank == 0
     print(f'device: {device} local_rank: {local_rank}/{local_size} world_rank: {rank}/{world_size}')
 
     # Setup stage_id based on rank
@@ -148,7 +149,8 @@ def main():
                          warmup=args.warmup_proportion,
                          t_total=num_steps)
 
-    if rank == 0:
+    dist.barrier()
+    if is_master:
         print('============================')
         print(f'world_size: {world_size}')
         print(f'num_replica: {num_replicas}')
@@ -163,9 +165,12 @@ def main():
             print(f'{key}: {value}')
         print('============================')
 
-    dist.barrier()
     steps = 0
     for epoch in range(num_epochs):
+        if is_master:
+            print('epoch', epoch + 1)
+
+        dist.barrier()
         if num_replicas > 1:
             # deterministically shuffle based on epoch
             train_loader.sampler.set_epoch(epoch)
