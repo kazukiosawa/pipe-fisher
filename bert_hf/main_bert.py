@@ -128,7 +128,7 @@ def train_one_epoch_with_1f1b(epoch):
 
         tensor = torch.tensor(stage.total_loss, device=stage.device)
         dist.reduce(tensor, dst=0)
-        tensor /= (world_size * num_micro_batches_per_step)
+        tensor /= (num_replicas * num_micro_batches_per_step)
         if is_master:
             print(f'epoch{epoch+1} step{i} loss = {float(tensor)}')
 
