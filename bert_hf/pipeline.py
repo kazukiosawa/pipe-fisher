@@ -68,7 +68,7 @@ class PipelineStage:
 
     def call_forward(self, input_source):
         if not self.is_first_stage:
-            self._init_inputs()
+            self._zero_inputs()
             self._receive_inputs()
         for key in self.stage_module.keys_from_source:
             self.inputs[key] = input_source[key].to(self.device)
@@ -91,7 +91,7 @@ class PipelineStage:
         tensors = tuple(self.outputs.values())
         grad_tensors = None
         if not self.is_last_stage:
-            self._init_output_grads()
+            self._zero_output_grads()
             self._receive_output_grads()
             grad_tensors = tuple(self.output_grads.values())
             assert len(tensors) == len(grad_tensors), 'output_grads are not set yet.'
@@ -103,7 +103,7 @@ class PipelineStage:
         if not self.is_first_stage:
             self._send_input_grads()
 
-    def _init_inputs(self):
+    def _zero_inputs(self):
         batch_size = (self.batch_size,)
         if self.max_seq_length:
             batch_size += (self.max_seq_length,)
@@ -111,7 +111,7 @@ class PipelineStage:
             size = batch_size + size
             self.inputs[key] = torch.zeros(size, device=self.device)
 
-    def _init_output_grads(self):
+    def _zero_output_grads(self):
         for key, tensor in self.outputs.items():
             self.output_grads[key] = torch.zeros_like(tensor)
 
