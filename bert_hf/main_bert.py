@@ -80,6 +80,8 @@ def main():
         steps_for_this_epoch = min(num_steps - steps, max_steps_per_epoch)
         if args.pipeline_method == PIPELINE_1F1B:
             train_one_epoch_with_1f1b(epoch)
+        else:
+            raise ValueError(f'Invalid pipeline_method: {args.pipeline_method}')
         steps += steps_for_this_epoch
 
         if args.checkpoint_dir is not None and is_stage_master:
