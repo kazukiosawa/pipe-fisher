@@ -106,6 +106,7 @@ def train_one_epoch_with_1f1b(epoch):
 
     for i in range(num_steps):
         dist.barrier()
+        assert len(stage.input_output_queue) == 0
         stage.total_loss = 0.
         optimizer.zero_grad()
 
@@ -123,9 +124,9 @@ def train_one_epoch_with_1f1b(epoch):
 
         stage.call_backward()
 
+        assert len(stage.input_output_queue) == 0
         if stage.grad_sync_group is not None:
             stage.sync_grad()
-
         optimizer.step()
 
         tensor = torch.tensor(stage.total_loss, device=stage.device)
