@@ -201,7 +201,7 @@ if __name__ == "__main__":
         num_steps = max_steps_per_epoch * args.num_epochs
     else:
         num_samples = num_steps * num_samples_per_step
-        num_epochs = math.ceil(len(train_dataset) / num_samples)
+        num_epochs = math.ceil(num_samples / len(train_dataset))
 
     # Prepare optimizer.
     decay_param_group = {'params': [], 'weight_decay': args.weight_decay}
