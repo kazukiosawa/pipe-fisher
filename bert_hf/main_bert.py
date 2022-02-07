@@ -65,12 +65,6 @@ parser.add_argument('--dist_backend', default='nccl', type=str)
 
 
 def main():
-    # Set random seed
-    random.seed(args.seed)
-    np.random.seed(args.seed)
-    torch.manual_seed(args.seed)
-    torch.cuda.manual_seed(args.seed)
-
     # Setup rank and device
     local_rank, local_size, rank, world_size = init_dist_process_group(backend=args.dist_backend)
     assert local_size <= torch.cuda.device_count()
@@ -79,6 +73,12 @@ def main():
     assert world_size > 1
     is_master = rank == 0
     print(f'world_rank: {rank}/{world_size} local_rank: {local_rank}/{local_size} device: {device}')
+
+    # Set random seed
+    random.seed(args.seed)
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
+    torch.cuda.manual_seed(args.seed)
 
     # Setup stage_id based on rank
     assert world_size % args.num_stages == 0
