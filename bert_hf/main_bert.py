@@ -78,7 +78,7 @@ def main():
     device = torch.cuda.current_device()
     assert world_size > 1
     is_master = rank == 0
-    print(f'device: {device} local_rank: {local_rank}/{local_size} world_rank: {rank}/{world_size}')
+    print(f'world_rank: {rank}/{world_size} local_rank: {local_rank}/{local_size} device: {device}')
 
     # Setup stage_id based on rank
     assert world_size % args.num_stages == 0
