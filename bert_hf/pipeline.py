@@ -116,22 +116,22 @@ class PipelineStage:
             self.output_grads[key] = torch.zeros_like(tensor)
 
     def _receive_inputs(self):
-        assert self.prev_rank, 'prev_rank is not specified.'
+        assert self.prev_rank is not None, 'prev_rank is not specified.'
         for key in self.keys_from_prev_stage:
             dist.recv(self.inputs[key], src=self.prev_rank)
 
     def _send_outputs(self):
-        assert self.next_rank, 'next_rank is not specified.'
+        assert self.next_rank is not None, 'next_rank is not specified.'
         for tensor in self.outputs.values():
             dist.send(tensor, dst=self.next_rank)
 
     def _receive_output_grads(self):
-        assert self.next_rank, 'next_rank is not specified.'
+        assert self.next_rank is not None, 'next_rank is not specified.'
         for key in self.output_grads:
             dist.recv(self.output_grads[key], src=self.next_rank)
 
     def _send_input_grads(self):
-        assert self.prev_rank, 'prev_rank is not specified.'
+        assert self.prev_rank is not None, 'prev_rank is not specified.'
         for key in self.keys_from_prev_stage:
             dist.send(self.input_grads[key], dst=self.prev_rank)
 
