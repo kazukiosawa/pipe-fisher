@@ -110,6 +110,7 @@ def train_one_epoch_with_1f1b(epoch, num_steps_for_this_epoch):
         stage.total_loss = 0.
         optimizer.zero_grad()
 
+        # start 1F1B pipeline
         for _ in range(num_warmup_steps):
             stage.call_forward(next_batch())
 
@@ -123,6 +124,7 @@ def train_one_epoch_with_1f1b(epoch, num_steps_for_this_epoch):
             stage.call_backward()
 
         stage.call_backward()
+        # end 1F1B pipeline
 
         assert len(stage.input_output_queue) == 0
         if stage.grad_sync_group is not None:
