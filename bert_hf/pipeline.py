@@ -100,7 +100,6 @@ class PipelineStage:
             assert len(out_tensors) == len(grad_tensors), 'output_grads are not set yet.'
 
         torch.autograd.backward(out_tensors, grad_tensors=grad_tensors)
-
         if not self.is_first_stage:
             self._send_input_grads(inputs)
 
