@@ -13,7 +13,7 @@ import torch.distributed as dist
 
 from transformers import BertTokenizer, BertConfig
 
-from pipeline import PipelineStage
+from pipeline import PipelineStage, PIPELINE_1F1B
 from utils import init_dist_process_group
 from bert_optim import BertAdam
 from bert_dataset import BERTDataset
@@ -21,9 +21,6 @@ from bert_model import get_stage_bert_for_pretraining
 
 
 logging.basicConfig(format='%(asctime)s - %(message)s', level=logging.INFO)
-
-
-PIPELINE_1F1B = '1f1b'
 
 
 parser = argparse.ArgumentParser()
@@ -104,7 +101,7 @@ def train_one_epoch(epoch, num_steps_for_this_epoch):
         dist.barrier()
         optimizer.zero_grad()
 
-        loss = call_pipeline(train_iterator, num_micro_batches_per_step)
+        loss = stage.call_pipeline(train_iterator, num_micro_batches_per_step)
 
         optimizer.step()
 
@@ -154,13 +151,8 @@ if __name__ == "__main__":
                           num_batch_dims=2,  # batch_size, max_seq_length
                           prev_rank=rank-num_ranks_per_stage if stage_id > 0 else None,
                           next_rank=rank+num_ranks_per_stage if stage_id < args.num_stages-1 else None,
-                          grad_sync_group=grad_sync_group)
-
-    # Select pipeline method
-    if args.pipeline_method == PIPELINE_1F1B:
-        call_pipeline = stage.call_1f1b_pipeline
-    else:
-        raise ValueError(f'Invalid pipeline_method: {args.pipeline_method}')
+                          grad_sync_group=grad_sync_group,
+                          pipeline_method=args.pipeline_method)
 
     # Prepare BERT dataset
     tokenizer = BertTokenizer(args.vocab_path, do_lower_case=args.do_lower_case)

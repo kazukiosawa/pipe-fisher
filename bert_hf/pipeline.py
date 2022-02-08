@@ -8,6 +8,8 @@ from torch import nn
 from torch.nn.utils import parameters_to_vector, vector_to_parameters
 import torch.distributed as dist
 
+PIPELINE_1F1B = '1f1b'
+
 
 class StageModule(nn.Module):
     @property
@@ -27,7 +29,8 @@ class PipelineStage:
                  num_batch_dims: int = 1,
                  prev_rank: int = None,
                  next_rank: int = None,
-                 grad_sync_group: dist.ProcessGroup = None):
+                 grad_sync_group: dist.ProcessGroup = None,
+                 pipeline_method: str = None):
         assert dist.is_initialized(), 'torch.distributed needs to be initialized.'
         assert num_stages > 1, 'num_stages has to be > 1.'
         assert stage_id in range(num_stages), 'stage_id has be in range(num_stage).'
@@ -41,6 +44,7 @@ class PipelineStage:
         self.next_rank = next_rank
         self.device = next(stage_module.parameters()).device
         self.total_loss = 0.
+        self.pipeline_method = pipeline_method
 
     @property
     def is_first_stage(self):
@@ -138,10 +142,24 @@ class PipelineStage:
         packed_tensor /= self.grad_sync_group.size()
         vector_to_parameters(packed_tensor, grads)
 
-    def call_1f1b_pipeline(self, data_iterator: Iterator, num_micro_batches):
-        num_warmup_steps = self.num_stages - self.stage_id - 1
+    def call_pipeline(self, data_iterator: Iterator, num_micro_batches, pipeline_method=None):
+        if pipeline_method is None:
+            pipeline_method = self.pipeline_method
+        if pipeline_method == PIPELINE_1F1B:
+            _call_pipeline = self.call_1f1b_pipeline
+        else:
+            raise ValueError(f'Invalid pipeline_method: {pipeline_method}')
+
         self.total_loss = 0.
         assert len(self.input_output_queue) == 0
+        _call_pipeline(data_iterator, num_micro_batches)
+        assert len(self.input_output_queue) == 0
+        if self.grad_sync_group is not None:
+            self.sync_grad()
+        return self.total_loss
+
+    def call_1f1b_pipeline(self, data_iterator: Iterator, num_micro_batches):
+        num_warmup_steps = self.num_stages - self.stage_id - 1
 
         for _ in range(num_warmup_steps):
             self.call_forward(next(data_iterator))
@@ -152,9 +170,3 @@ class PipelineStage:
         for _ in range(num_warmup_steps):
             self.call_backward()
         self.call_backward()
-
-        assert len(self.input_output_queue) == 0
-        if self.grad_sync_group is not None:
-            self.sync_grad()
-
-        return self.total_loss
