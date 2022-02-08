@@ -67,16 +67,16 @@ parser.add_argument('--num_workers', default=4, type=int)
 
 
 def main():
-    steps = 0
+    total_steps = 0
     for epoch in range(num_epochs):
         dist.barrier()
         if num_replicas > 1:
             # deterministically shuffle based on epoch
             train_loader.sampler.set_epoch(epoch)
 
-        steps_for_this_epoch = min(num_steps - steps, max_steps_per_epoch)
-        train_one_epoch(epoch, steps_for_this_epoch)
-        steps += steps_for_this_epoch
+        steps_for_this_epoch = min(num_steps - total_steps, max_steps_per_epoch)
+        train_one_epoch(epoch, total_steps, steps_for_this_epoch)
+        total_steps += steps_for_this_epoch
 
         if args.checkpoint_dir is not None and is_stage_master:
             state = {
@@ -93,7 +93,7 @@ def main():
         print('Finished.')
 
 
-def train_one_epoch(epoch, num_steps_for_this_epoch):
+def train_one_epoch(epoch, step, num_steps_for_this_epoch):
     stage.stage_module.train()
     train_iterator = iter(train_loader)
 
@@ -109,7 +109,7 @@ def train_one_epoch(epoch, num_steps_for_this_epoch):
         dist.reduce(tensor, dst=0)
         tensor /= (num_replicas * num_micro_batches_per_step)
         if is_master:
-            print(f'epoch{epoch+1} step{i} loss = {float(tensor)}')
+            print(f'epoch{epoch+1} step{step+i+1} loss = {float(tensor)}')
 
 
 if __name__ == "__main__":
