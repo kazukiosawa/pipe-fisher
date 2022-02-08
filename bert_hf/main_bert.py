@@ -19,6 +19,8 @@ from bert_optim import BertAdam
 from bert_dataset import BERTDataset
 from bert_model import get_stage_bert_for_pretraining
 
+import asdfghjkl as asdl
+
 
 logging.basicConfig(format='%(asctime)s - %(message)s', level=logging.INFO)
 
@@ -53,6 +55,9 @@ parser.add_argument("--learning_rate", default=3e-5, type=float,
 parser.add_argument("--weight_decay", type=float, default=0.01)
 parser.add_argument("--warmup_proportion", default=0.1, type=float,
                     help="Proportion of training to perform linear learning rate warmup for.")
+parser.add_argument("--precondition", action='store_true')
+parser.add_argument("--ema_decay", type=float, default=-1)
+parser.add_argument("--damping", type=float, default=1e-3)
 # Pipeline
 parser.add_argument('--pipeline_method', choices=[PIPELINE_1F1B], default=PIPELINE_1F1B)
 parser.add_argument('--num_stages', type=int, default=4,
@@ -101,7 +106,14 @@ def train_one_epoch(epoch, step, num_steps_for_this_epoch):
         dist.barrier()
         optimizer.zero_grad()
 
-        loss = stage.call_pipeline(train_iterator, num_micro_batches_per_step)
+        if args.precondition:
+            with asdl.save_inputs_outgrads(stage_module, ignore_modules=ignore_modules) as cxt:
+                loss = stage.call_pipeline(train_iterator, num_micro_batches_per_step)
+                ngd.update_curvature(cxt=cxt)
+            ngd.update_inv()
+            ngd.precondition()
+        else:
+            loss = stage.call_pipeline(train_iterator, num_micro_batches_per_step)
 
         optimizer.step()
 
@@ -197,10 +209,26 @@ if __name__ == "__main__":
             if hasattr(module, 'bias') and module.bias is not None:
                 no_decay_param_group['params'].append(module.bias)
             decay_param_group['params'].append(module.weight)
-    optimizer = BertAdam([decay_param_group, no_decay_param_group],
-                         lr=args.learning_rate,
-                         warmup=args.warmup_proportion,
-                         t_total=num_steps)
+
+    if args.precondition:
+        # Prepare gradient preconditioner
+        ignore_modules = ['word_embedding', 'predictions.decoder']
+        ngd = asdl.EmpiricalNaturalGradient(stage_module,
+                                            fisher_shape=[(nn.Linear, asdl.SHAPE_KRON),
+                                                          (nn.LayerNorm, asdl.SHAPE_UNIT_WISE),
+                                                          (nn.Embedding, asdl.SHAPE_KRON)],
+                                            ema_decay=args.ema_decay,
+                                            damping=args.damping,
+                                            ignore_modules=ignore_modules)
+        optimizer = torch.optim.SGD([decay_param_group, no_decay_param_group],
+                                    lr=args.learning_rate)
+    else:
+        ignore_modules = []
+        ngd = None
+        optimizer = BertAdam([decay_param_group, no_decay_param_group],
+                             lr=args.learning_rate,
+                             warmup=args.warmup_proportion,
+                             t_total=num_steps)
 
     dist.barrier()
     if is_master:
