@@ -158,7 +158,7 @@ class PipelineStage:
         return self.total_loss
 
     def call_1f1b_pipeline(self, data_iterator: Iterator, num_micro_batches):
-        self.call_pipeline(data_iterator, num_micro_batches, PIPELINE_1F1B)
+        return self.call_pipeline(data_iterator, num_micro_batches, PIPELINE_1F1B)
 
     def _call_1f1b_pipeline(self, data_iterator: Iterator, num_micro_batches):
         num_warmup_steps = self.num_stages - self.stage_id - 1
