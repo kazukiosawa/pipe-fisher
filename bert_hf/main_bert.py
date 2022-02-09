@@ -10,6 +10,7 @@ from torch import nn
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel
 
 from transformers import BertTokenizer, BertConfig
 
@@ -139,19 +140,27 @@ if __name__ == "__main__":
         _stage_id = _rank // num_ranks_per_stage
         stage_to_ranks_map[_stage_id].append(_rank)
     is_stage_master = rank % num_ranks_per_stage == 0
+    num_replicas = num_ranks_per_stage
 
     # Prepare BERT pipeline stage
     config = BertConfig.from_json_file(args.bert_config_path)
     stage_module = get_stage_bert_for_pretraining(stage_id, args.num_stages, config)
     stage_module.to(device)
-    grad_sync_group = dist.new_group(stage_to_ranks_map[stage_id]) if num_ranks_per_stage > 1 else None
+    if num_replicas > 1:
+        grad_sync_group = dist.new_group(stage_to_ranks_map[stage_id])
+        logging.info(f'rank {rank}: init DDP')
+        stage_module = DistributedDataParallel(stage_module,
+                                               device_ids=[device],
+                                               output_device=device,
+                                               process_group=grad_sync_group)
+        logging.info(f'rank {rank}: init DDP done')
+        dist.barrier()
     stage = PipelineStage(stage_id=stage_id,
                           num_stages=args.num_stages,
                           stage_module=stage_module,
                           num_batch_dims=2,  # batch_size, max_seq_length
                           prev_rank=rank-num_ranks_per_stage if stage_id > 0 else None,
                           next_rank=rank+num_ranks_per_stage if stage_id < args.num_stages-1 else None,
-                          grad_sync_group=grad_sync_group,
                           pipeline_method=args.pipeline_method)
 
     # Prepare BERT dataset
@@ -162,7 +171,6 @@ if __name__ == "__main__":
                                 corpus_lines=args.corpus_lines,
                                 encoding='latin-1',
                                 on_memory=args.on_memory)
-    num_replicas = num_ranks_per_stage
     if num_replicas > 1:
         rank_in_stage = rank % num_ranks_per_stage
         train_sampler = DistributedSampler(train_dataset, num_replicas=num_replicas, rank=rank_in_stage)

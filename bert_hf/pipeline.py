@@ -1,11 +1,12 @@
 import collections
 from collections import deque
 from typing import List, Tuple, Deque, OrderedDict, Iterator
+from contextlib import nullcontext
 
 import torch
 from torch import Tensor
 from torch import nn
-from torch.nn.utils import parameters_to_vector, vector_to_parameters
+from torch.nn.parallel import DistributedDataParallel
 import torch.distributed as dist
 
 PIPELINE_1F1B = '1f1b'
@@ -29,7 +30,6 @@ class PipelineStage:
                  num_batch_dims: int = 1,
                  prev_rank: int = None,
                  next_rank: int = None,
-                 grad_sync_group: dist.ProcessGroup = None,
                  pipeline_method: str = None):
         assert dist.is_initialized(), 'torch.distributed needs to be initialized.'
         assert num_stages > 1, 'num_stages has to be > 1.'
@@ -39,7 +39,6 @@ class PipelineStage:
         self.stage_module = stage_module
         self.num_batch_dims = num_batch_dims
         self.input_output_queue: Deque[Tuple[OrderedDict[str, Tensor], OrderedDict[str, Tensor]]] = deque()
-        self.grad_sync_group = grad_sync_group
         self.prev_rank = prev_rank
         self.next_rank = next_rank
         self.device = next(stage_module.parameters()).device
@@ -66,6 +65,11 @@ class PipelineStage:
     def keys_from_prev_stage(self):
         return [v[0] for v in self.keys_and_sizes_from_prev_stage]
 
+    def no_sync_if_need(self, no_sync):
+        if isinstance(self.stage_module, DistributedDataParallel) and no_sync:
+            return self.stage_module.no_sync()
+        return nullcontext()
+
     def call_forward(self, input_source: OrderedDict[str, Tensor]):
         if not self.is_first_stage:
             inputs = self._get_zero_inputs(input_source)
@@ -85,7 +89,7 @@ class PipelineStage:
         # push inputs/outputs to the queue
         self.input_output_queue.append((inputs, outputs))
 
-    def call_backward(self):
+    def call_backward(self, no_sync=True):
         assert len(self.input_output_queue) > 0, 'No input/output is set.'
         # pop inputs/outputs from the queue
         inputs, outputs = self.input_output_queue.popleft()
@@ -99,7 +103,8 @@ class PipelineStage:
             grad_tensors = tuple(tensor.grad for tensor in outputs.values())
             assert len(out_tensors) == len(grad_tensors), 'output_grads are not set yet.'
 
-        torch.autograd.backward(out_tensors, grad_tensors=grad_tensors)
+        with self.no_sync_if_need(no_sync):
+            torch.autograd.backward(out_tensors, grad_tensors=grad_tensors)
         if not self.is_first_stage:
             self._send_input_grads(inputs)
 
@@ -132,15 +137,6 @@ class PipelineStage:
         for key in self.keys_from_prev_stage:
             dist.send(inputs[key].grad, dst=self.prev_rank)
 
-    def sync_grad(self):
-        assert self.grad_sync_group is not None, 'grad_sync_group is not specified.'
-        dist.barrier(group=self.grad_sync_group)
-        grads = [p.grad for p in self.stage_module.parameters() if p.grad is not None]
-        packed_tensor = parameters_to_vector(grads)
-        dist.all_reduce(packed_tensor, group=self.grad_sync_group)
-        packed_tensor /= self.grad_sync_group.size()
-        vector_to_parameters(packed_tensor, grads)
-
     def call_pipeline(self, data_iterator: Iterator, num_micro_batches, pipeline_method=None):
         if pipeline_method is None:
             pipeline_method = self.pipeline_method
@@ -153,8 +149,6 @@ class PipelineStage:
         assert len(self.input_output_queue) == 0
         _call_pipeline(data_iterator, num_micro_batches)
         assert len(self.input_output_queue) == 0
-        if self.grad_sync_group is not None:
-            self.sync_grad()
         return self.total_loss
 
     def call_1f1b_pipeline(self, data_iterator: Iterator, num_micro_batches):
@@ -171,4 +165,4 @@ class PipelineStage:
         self.call_forward(next(data_iterator))
         for _ in range(num_warmup_steps):
             self.call_backward()
-        self.call_backward()
+        self.call_backward(no_sync=False)
