@@ -69,11 +69,6 @@ class PipelineStage:
     def keys_from_prev_stage(self):
         return [v[0] for v in self.keys_and_sizes_from_prev_stage]
 
-    def no_sync_if_need(self, no_sync):
-        if isinstance(self.stage_module, DistributedDataParallel) and no_sync:
-            return self.stage_module.no_sync()
-        return nullcontext()
-
     def call_forward(self, input_source: OrderedDict[str, Tensor]):
         if not self.is_first_stage:
             inputs = self._get_zero_inputs(input_source)
@@ -113,6 +108,11 @@ class PipelineStage:
             self._send_input_grads(inputs)
 
         del inputs, outputs
+
+    def no_sync_if_need(self, no_sync):
+        if isinstance(self.stage_module, DistributedDataParallel) and no_sync:
+            return self.stage_module.no_sync()
+        return nullcontext()
 
     def _get_zero_inputs(self, input_source: OrderedDict[str, Tensor]):
         batch_size = tuple(next(iter(input_source.values())).shape[:self.num_batch_dims])
