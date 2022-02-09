@@ -132,10 +132,11 @@ if __name__ == "__main__":
     torch.cuda.manual_seed(args.seed)
 
     # Setup stage_id based on rank
-    assert world_size % args.num_stages == 0
-    num_ranks_per_stage = int(world_size / args.num_stages)
+    num_stages = args.num_stages
+    assert world_size % num_stages == 0
+    num_ranks_per_stage = int(world_size / num_stages)
     stage_id = rank // num_ranks_per_stage
-    stage_to_ranks_map = {_stage_id: [] for _stage_id in range(args.num_stages)}
+    stage_to_ranks_map = {_stage_id: [] for _stage_id in range(num_stages)}
     for _rank in range(world_size):
         _stage_id = _rank // num_ranks_per_stage
         stage_to_ranks_map[_stage_id].append(_rank)
@@ -144,7 +145,7 @@ if __name__ == "__main__":
 
     # Prepare BERT pipeline stage
     config = BertConfig.from_json_file(args.bert_config_path)
-    stage_module = get_stage_bert_for_pretraining(stage_id, args.num_stages, config)
+    stage_module = get_stage_bert_for_pretraining(stage_id, num_stages, config)
     stage_module.to(device)
     if num_replicas > 1:
         grad_sync_group = dist.new_group(stage_to_ranks_map[stage_id])
@@ -156,11 +157,11 @@ if __name__ == "__main__":
         logging.info(f'rank {rank}: init DDP done')
         dist.barrier()
     stage = PipelineStage(stage_id=stage_id,
-                          num_stages=args.num_stages,
+                          num_stages=num_stages,
                           stage_module=stage_module,
                           num_batch_dims=2,  # batch_size, max_seq_length
                           prev_rank=rank-num_ranks_per_stage if stage_id > 0 else None,
-                          next_rank=rank+num_ranks_per_stage if stage_id < args.num_stages-1 else None,
+                          next_rank=rank+num_ranks_per_stage if stage_id < num_stages-1 else None,
                           pipeline_method=args.pipeline_method)
 
     # Prepare BERT dataset
@@ -183,7 +184,7 @@ if __name__ == "__main__":
                               num_workers=args.num_workers)
 
     # Set the number of optimization steps and epochs
-    num_micro_batches_per_step = args.num_stages * args.gradient_accumulation_steps
+    num_micro_batches_per_step = num_stages * args.gradient_accumulation_steps
     num_samples_per_step = num_micro_batches_per_step * args.micro_batch_size * num_replicas
     max_steps_per_epoch = len(train_dataset) // num_samples_per_step
     num_steps = args.num_optimization_steps
@@ -219,7 +220,7 @@ if __name__ == "__main__":
         print(f'num_optimization_steps: {num_steps}')
         print(f'num_micro_batches_per_step: {num_micro_batches_per_step}')
         print(f'num_ranks_per_stage: {num_ranks_per_stage}')
-        for _stage_id in range(args.num_stages):
+        for _stage_id in range(num_stages):
             print(f'stage{_stage_id}: ranks {stage_to_ranks_map[_stage_id]}')
         print('----------------------------')
         for key, value in vars(args).items():
