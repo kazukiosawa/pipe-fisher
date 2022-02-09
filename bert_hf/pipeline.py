@@ -55,10 +55,14 @@ class PipelineStage:
 
     @property
     def keys_from_source(self):
+        if isinstance(self.stage_module, DistributedDataParallel):
+            return self.stage_module.module.keys_from_source
         return self.stage_module.keys_from_source
 
     @property
     def keys_and_sizes_from_prev_stage(self):
+        if isinstance(self.stage_module, DistributedDataParallel):
+            return self.stage_module.module.keys_and_sizes_from_prev_stage
         return self.stage_module.keys_and_sizes_from_prev_stage
 
     @property
