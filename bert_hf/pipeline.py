@@ -1,6 +1,6 @@
 import collections
 from collections import deque
-from typing import List, Tuple, Deque, OrderedDict, Iterator
+from typing import List, Tuple, Deque, OrderedDict, Iterator, Union
 from contextlib import nullcontext
 
 import torch
@@ -26,7 +26,7 @@ class PipelineStage:
     def __init__(self,
                  stage_id: int,
                  num_stages: int,
-                 stage_module: StageModule,
+                 stage_module: Union[StageModule, DistributedDataParallel],
                  num_batch_dims: int = 1,
                  prev_rank: int = None,
                  next_rank: int = None,
