@@ -148,12 +148,14 @@ if __name__ == "__main__":
     stage_module = get_stage_bert_for_pretraining(stage_id, num_stages, config)
     stage_module.to(device)
     if num_replicas > 1:
-        grad_sync_group = dist.new_group(stage_to_ranks_map[stage_id])
-        logging.info(f'rank {rank}: init DDP')
+        grad_sync_groups = []
+        for _stage_id in range(num_stages):
+            grad_sync_groups.append(dist.new_group(stage_to_ranks_map[_stage_id]))
+        logging.info(f'rank {rank}: init DDP stage{stage_id}:{stage_to_ranks_map[stage_id]}')
         stage_module = DistributedDataParallel(stage_module,
                                                device_ids=[device],
                                                output_device=device,
-                                               process_group=grad_sync_group)
+                                               process_group=grad_sync_groups[stage_id])
         logging.info(f'rank {rank}: init DDP done')
         dist.barrier()
     stage = PipelineStage(stage_id=stage_id,
