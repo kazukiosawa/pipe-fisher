@@ -109,7 +109,7 @@ class PipelineStage:
 
         del inputs, outputs
 
-    def no_sync_if_need(self, no_sync):
+    def no_sync_if_need(self, no_sync: bool):
         if isinstance(self.stage_module, DistributedDataParallel) and no_sync:
             return self.stage_module.no_sync()
         return nullcontext()
