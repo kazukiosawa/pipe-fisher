@@ -151,12 +151,10 @@ if __name__ == "__main__":
         grad_sync_groups = []
         for _stage_id in range(num_stages):
             grad_sync_groups.append(dist.new_group(stage_to_ranks_map[_stage_id]))
-        logging.info(f'rank {rank}: init DDP stage{stage_id}:{stage_to_ranks_map[stage_id]}')
         stage_module = DistributedDataParallel(stage_module,
                                                device_ids=[device],
                                                output_device=device,
                                                process_group=grad_sync_groups[stage_id])
-        logging.info(f'rank {rank}: init DDP done')
         dist.barrier()
     stage = PipelineStage(stage_id=stage_id,
                           num_stages=num_stages,
