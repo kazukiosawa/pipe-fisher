@@ -154,7 +154,8 @@ if __name__ == "__main__":
         stage_module = DistributedDataParallel(stage_module,
                                                device_ids=[device],
                                                output_device=device,
-                                               process_group=grad_sync_groups[stage_id])
+                                               process_group=grad_sync_groups[stage_id],
+                                               broadcast_buffers=False)
         dist.barrier()
     stage = PipelineStage(stage_id=stage_id,
                           num_stages=num_stages,
