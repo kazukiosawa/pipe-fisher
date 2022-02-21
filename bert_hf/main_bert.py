@@ -14,7 +14,7 @@ from torch.nn.parallel import DistributedDataParallel
 
 from transformers import BertTokenizer, BertConfig
 
-from pipeline import PipelineStage, PIPELINE_1F1B
+from pipeline import PipelineStage, PIPELINE_1F1B, PIPELINE_GPIPE, PIPELINE_CHIMERA
 from utils import init_dist_process_group
 from bert_optim import BertAdam
 from bert_dataset import BERTDataset
@@ -55,7 +55,7 @@ parser.add_argument("--weight_decay", type=float, default=0.01)
 parser.add_argument("--warmup_proportion", default=0.1, type=float,
                     help="Proportion of training to perform linear learning rate warmup for.")
 # Pipeline
-parser.add_argument('--pipeline_method', choices=[PIPELINE_1F1B], default=PIPELINE_1F1B)
+parser.add_argument('--pipeline_method', choices=[PIPELINE_1F1B, PIPELINE_GPIPE, PIPELINE_CHIMERA], default=PIPELINE_1F1B)
 parser.add_argument('--num_stages', type=int, default=4,
                     help='number of stages in configurable BERT model')
 # Others
@@ -215,6 +215,7 @@ if __name__ == "__main__":
     dist.barrier()
     if is_master:
         print('============================')
+        print(f'pipeline_method: {args.pipeline_method}')
         print(f'world_size: {world_size}')
         print(f'num_replica: {num_replicas}')
         print(f'num_epochs: {num_epochs}')
