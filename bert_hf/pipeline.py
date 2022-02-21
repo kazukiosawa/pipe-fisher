@@ -10,6 +10,8 @@ from torch.nn.parallel import DistributedDataParallel
 import torch.distributed as dist
 
 PIPELINE_1F1B = '1f1b'
+PIPELINE_GPIPE = 'gpipe'
+PIPELINE_CHIMERA = 'chimera'
 
 
 class StageModule(nn.Module):
@@ -146,6 +148,8 @@ class PipelineStage:
             pipeline_method = self.pipeline_method
         if pipeline_method == PIPELINE_1F1B:
             _call_pipeline = self._call_1f1b_pipeline
+        elif pipeline_method == PIPELINE_GPIPE:
+            _call_pipeline = self._call_gpipe_pipeline
         else:
             raise ValueError(f'Invalid pipeline_method: {pipeline_method}')
 
@@ -170,3 +174,10 @@ class PipelineStage:
         for _ in range(num_warmup_steps):
             self.call_backward()
         self.call_backward(no_sync=False)
+
+    def _call_gpipe_pipeline(self, data_iterator: Iterator, num_micro_batches):
+        for _ in range(num_micro_batches):
+            self.call_forward(next(data_iterator))
+
+        for _ in range(num_micro_batches):
+            self.call_backward()
