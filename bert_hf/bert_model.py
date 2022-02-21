@@ -33,6 +33,7 @@ def get_stage_bert_for_pretraining(stage_id: int,
 
     N_s, N_i, N_e: the number of hidden layers (BertLayers) for each stage
     """
+    assert num_stages > 1, 'At least 2 stages are required.'
     if hidden_layers_assignments is None:
         """
         Assign the number of hidden layers (BertLayers) so that
