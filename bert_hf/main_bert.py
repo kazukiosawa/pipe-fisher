@@ -10,10 +10,11 @@ from torch import nn
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel
 
 from transformers import BertTokenizer, BertConfig
 
-from pipeline import PipelineStage, PIPELINE_1F1B
+from pipeline import PipelineStage, PIPELINE_1F1B, PIPELINE_GPIPE, PIPELINE_CHIMERA
 from utils import init_dist_process_group
 from bert_optim import BertAdam
 from bert_dataset import BERTDataset
@@ -59,7 +60,7 @@ parser.add_argument("--precondition", action='store_true')
 parser.add_argument("--ema_decay", type=float, default=-1)
 parser.add_argument("--damping", type=float, default=1e-3)
 # Pipeline
-parser.add_argument('--pipeline_method', choices=[PIPELINE_1F1B], default=PIPELINE_1F1B)
+parser.add_argument('--pipeline_method', choices=[PIPELINE_1F1B, PIPELINE_GPIPE, PIPELINE_CHIMERA], default=PIPELINE_1F1B)
 parser.add_argument('--num_stages', type=int, default=4,
                     help='number of stages in configurable BERT model')
 # Others
@@ -143,27 +144,37 @@ if __name__ == "__main__":
     torch.cuda.manual_seed(args.seed)
 
     # Setup stage_id based on rank
-    assert world_size % args.num_stages == 0
-    num_ranks_per_stage = int(world_size / args.num_stages)
+    num_stages = args.num_stages
+    assert world_size % num_stages == 0
+    num_ranks_per_stage = int(world_size / num_stages)
     stage_id = rank // num_ranks_per_stage
-    stage_to_ranks_map = {_stage_id: [] for _stage_id in range(args.num_stages)}
+    stage_to_ranks_map = {_stage_id: [] for _stage_id in range(num_stages)}
     for _rank in range(world_size):
         _stage_id = _rank // num_ranks_per_stage
         stage_to_ranks_map[_stage_id].append(_rank)
     is_stage_master = rank % num_ranks_per_stage == 0
+    num_replicas = num_ranks_per_stage
 
     # Prepare BERT pipeline stage
     config = BertConfig.from_json_file(args.bert_config_path)
-    stage_module = get_stage_bert_for_pretraining(stage_id, args.num_stages, config)
+    stage_module = get_stage_bert_for_pretraining(stage_id, num_stages, config)
     stage_module.to(device)
-    grad_sync_group = dist.new_group(stage_to_ranks_map[stage_id]) if num_ranks_per_stage > 1 else None
+    if num_replicas > 1:
+        grad_sync_groups = []
+        for _stage_id in range(num_stages):
+            grad_sync_groups.append(dist.new_group(stage_to_ranks_map[_stage_id]))
+        stage_module = DistributedDataParallel(stage_module,
+                                               device_ids=[device],
+                                               output_device=device,
+                                               process_group=grad_sync_groups[stage_id],
+                                               broadcast_buffers=False)
+        dist.barrier()
     stage = PipelineStage(stage_id=stage_id,
-                          num_stages=args.num_stages,
+                          num_stages=num_stages,
                           stage_module=stage_module,
                           num_batch_dims=2,  # batch_size, max_seq_length
                           prev_rank=rank-num_ranks_per_stage if stage_id > 0 else None,
-                          next_rank=rank+num_ranks_per_stage if stage_id < args.num_stages-1 else None,
-                          grad_sync_group=grad_sync_group,
+                          next_rank=rank+num_ranks_per_stage if stage_id < num_stages-1 else None,
                           pipeline_method=args.pipeline_method)
 
     # Prepare BERT dataset
@@ -174,7 +185,6 @@ if __name__ == "__main__":
                                 corpus_lines=args.corpus_lines,
                                 encoding='latin-1',
                                 on_memory=args.on_memory)
-    num_replicas = num_ranks_per_stage
     if num_replicas > 1:
         rank_in_stage = rank % num_ranks_per_stage
         train_sampler = DistributedSampler(train_dataset, num_replicas=num_replicas, rank=rank_in_stage)
@@ -187,7 +197,7 @@ if __name__ == "__main__":
                               num_workers=args.num_workers)
 
     # Set the number of optimization steps and epochs
-    num_micro_batches_per_step = args.num_stages * args.gradient_accumulation_steps
+    num_micro_batches_per_step = num_stages * args.gradient_accumulation_steps
     num_samples_per_step = num_micro_batches_per_step * args.micro_batch_size * num_replicas
     max_steps_per_epoch = len(train_dataset) // num_samples_per_step
     num_steps = args.num_optimization_steps
@@ -233,13 +243,14 @@ if __name__ == "__main__":
     dist.barrier()
     if is_master:
         print('============================')
+        print(f'pipeline_method: {args.pipeline_method}')
         print(f'world_size: {world_size}')
         print(f'num_replica: {num_replicas}')
         print(f'num_epochs: {num_epochs}')
         print(f'num_optimization_steps: {num_steps}')
         print(f'num_micro_batches_per_step: {num_micro_batches_per_step}')
         print(f'num_ranks_per_stage: {num_ranks_per_stage}')
-        for _stage_id in range(args.num_stages):
+        for _stage_id in range(num_stages):
             print(f'stage{_stage_id}: ranks {stage_to_ranks_map[_stage_id]}')
         print('----------------------------')
         for key, value in vars(args).items():
