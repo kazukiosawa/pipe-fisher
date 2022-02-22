@@ -26,6 +26,11 @@ import asdfghjkl as asdl
 logging.basicConfig(format='%(asctime)s - %(message)s', level=logging.INFO)
 
 
+OPTIM_ADAM = 'adam'
+OPTIM_NGD = 'ngd'
+OPTIM_WOODBURY_NGD = 'woodbury_ngd'
+
+
 parser = argparse.ArgumentParser()
 # Dataset & BERT
 parser.add_argument("--corpus_path", default=None, type=str, required=True,
@@ -56,7 +61,7 @@ parser.add_argument("--learning_rate", default=3e-5, type=float,
 parser.add_argument("--weight_decay", type=float, default=0.01)
 parser.add_argument("--warmup_proportion", default=0.1, type=float,
                     help="Proportion of training to perform linear learning rate warmup for.")
-parser.add_argument("--precondition", action='store_true')
+parser.add_argument("--optim", choices=[OPTIM_ADAM, OPTIM_NGD, OPTIM_WOODBURY_NGD], default=OPTIM_ADAM)
 parser.add_argument("--ema_decay", type=float, default=-1)
 parser.add_argument("--damping", type=float, default=1e-3)
 # Pipeline
@@ -107,12 +112,17 @@ def train_one_epoch(epoch, step, num_steps_for_this_epoch):
         dist.barrier()
         optimizer.zero_grad()
 
-        if args.precondition:
+        if args.optim == OPTIM_NGD:
             with asdl.save_inputs_outgrads(stage_module, ignore_modules=ignore_modules) as cxt:
                 loss = stage.call_pipeline(train_iterator, num_micro_batches_per_step)
                 ngd.update_curvature(cxt=cxt)
             ngd.update_inv()
             ngd.precondition()
+        elif args.optim == OPTIM_WOODBURY_NGD:
+            with asdl.save_inputs_outgrads(stage_module, ignore_modules=ignore_modules) as cxt:
+                with asdl.skip_param_grad(stage_module):
+                    loss = stage.call_pipeline(train_iterator, num_micro_batches_per_step)
+                asdl.empirical_natural_gradient_by_context(cxt, args.damping)
         else:
             loss = stage.call_pipeline(train_iterator, num_micro_batches_per_step)
 
@@ -220,25 +230,25 @@ if __name__ == "__main__":
                 no_decay_param_group['params'].append(module.bias)
             decay_param_group['params'].append(module.weight)
 
-    if args.precondition:
-        # Prepare gradient preconditioner
-        ignore_modules = ['word_embedding', 'predictions.decoder']
-        ngd = asdl.EmpiricalNaturalGradient(stage_module,
-                                            fisher_shape=[(nn.Linear, asdl.SHAPE_KRON),
-                                                          (nn.LayerNorm, asdl.SHAPE_UNIT_WISE),
-                                                          (nn.Embedding, asdl.SHAPE_KRON)],
-                                            ema_decay=args.ema_decay,
-                                            damping=args.damping,
-                                            ignore_modules=ignore_modules)
-        optimizer = torch.optim.SGD([decay_param_group, no_decay_param_group],
-                                    lr=args.learning_rate)
-    else:
-        ignore_modules = []
-        ngd = None
+    ngd = None
+    ignore_modules = []
+    if args.optim == OPTIM_ADAM:
         optimizer = BertAdam([decay_param_group, no_decay_param_group],
                              lr=args.learning_rate,
                              warmup=args.warmup_proportion,
                              t_total=num_steps)
+    else:
+        ignore_modules = ['word_embedding', 'predictions.decoder']
+        optimizer = torch.optim.SGD([decay_param_group, no_decay_param_group],
+                                    lr=args.learning_rate)
+        if args.optim == OPTIM_NGD:
+            ngd = asdl.EmpiricalNaturalGradient(stage_module,
+                                                fisher_shape=[(nn.Linear, asdl.SHAPE_KRON),
+                                                              (nn.LayerNorm, asdl.SHAPE_UNIT_WISE),
+                                                              (nn.Embedding, asdl.SHAPE_KRON)],
+                                                ema_decay=args.ema_decay,
+                                                damping=args.damping,
+                                                ignore_modules=ignore_modules)
 
     dist.barrier()
     if is_master:
