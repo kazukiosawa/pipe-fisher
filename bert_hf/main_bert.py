@@ -118,11 +118,11 @@ def train_one_epoch(epoch, step, num_steps_for_this_epoch):
 
         optimizer.step()
 
-        tensor = torch.tensor(loss, device=stage.device)
-        dist.reduce(tensor, dst=0)
-        tensor /= (num_replicas * num_micro_batches_per_step)
+        loss = torch.tensor(loss, device=stage.device)
+        dist.reduce(loss, dst=0)
+        loss /= (num_replicas * num_micro_batches_per_step)
         if is_master:
-            print(f'epoch{epoch+1} step{step+i+1} loss = {float(tensor)}')
+            print(f'epoch{epoch+1} step{step+i+1} loss = {float(loss)}')
 
 
 if __name__ == "__main__":
