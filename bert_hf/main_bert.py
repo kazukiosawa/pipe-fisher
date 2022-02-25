@@ -238,14 +238,13 @@ if __name__ == "__main__":
                              warmup=args.warmup_proportion,
                              t_total=num_steps)
     else:
-        ignore_modules = ['word_embedding', 'predictions.decoder']
+        ignore_modules = ['word_embedding', 'predictions.decoder', nn.Embedding]
         optimizer = torch.optim.SGD([decay_param_group, no_decay_param_group],
                                     lr=args.learning_rate)
         if args.optim == OPTIM_NGD:
             ngd = asdl.EmpiricalNaturalGradient(stage_module,
                                                 fisher_shape=[(nn.Linear, asdl.SHAPE_KRON),
-                                                              (nn.LayerNorm, asdl.SHAPE_UNIT_WISE),
-                                                              (nn.Embedding, asdl.SHAPE_KRON)],
+                                                              (nn.LayerNorm, asdl.SHAPE_UNIT_WISE)],
                                                 ema_decay=args.ema_decay,
                                                 damping=args.damping,
                                                 ignore_modules=ignore_modules)
