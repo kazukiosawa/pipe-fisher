@@ -28,13 +28,13 @@ class StageModule(nn.Module):
         raise NotImplementedError
 
 
-def recv_comm_thread(self, num_iterations, queue, src_rank, tag, tensor_shape, device):
+def recv_comm_thread(num_iterations, queue, src_rank, tag, tensor_shape, device):
     for i in range(num_iterations):
         recv_tensor = torch.zeros(tensor_shape, device=device, requires_grad=True)
         dist.recv(tensor=recv_tensor, src=src_rank, tag=tag)
         queue.add(recv_tensor)
 
-def send_comm_thread(self, num_iterations, queue, dst_rank, tag):
+def send_comm_thread(num_iterations, queue, dst_rank, tag):
     for i in range(num_iterations):
         tensor = queue.remove()
         dist.send(tensor=tensor, dst=dst_rank, tag=tag)
