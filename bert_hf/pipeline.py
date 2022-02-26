@@ -195,10 +195,15 @@ class PipelineStage:
         out_tensors = tuple(outputs.values())
         grad_tensors = None
         if not self.is_last_stage:
-            for tensor in outputs.values():
-                tensor.grad = torch.zeros_like(tensor)
-            self._receive_output_grads(outputs)
-            grad_tensors = tuple(tensor.grad for tensor in outputs.values())
+            #for tensor in outputs.values():
+            #    tensor.grad = torch.zeros_like(tensor)
+            #self._receive_output_grads(outputs)
+            #grad_tensors = tuple(tensor.grad for tensor in outputs.values())
+            grad_dict = {}
+            for key in outputs:
+                grad_dict[key] = self.recv_output_grads_from_queue(key)
+            grad_tensors = tuple(grad_dict[key] for key in grad_dict) # Shigang: Is this safe for autograd.backward?
+
             assert len(out_tensors) == len(grad_tensors), 'output_grads are not set yet.'
 
         with self.no_sync_if_need(no_sync):
@@ -217,7 +222,6 @@ class PipelineStage:
 
     def _get_zero_inputs(self, input_source: OrderedDict[str, Tensor]):
         batch_size = tuple(next(iter(input_source.values())).shape[:self.num_batch_dims])
-        print("batch_size: ", batch_size)
         inputs = collections.OrderedDict()
         for key, size in self.keys_and_sizes_from_prev_stage:
             inputs[key] = torch.zeros(batch_size + size, device=self.device, requires_grad=True)
