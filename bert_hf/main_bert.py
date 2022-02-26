@@ -76,7 +76,7 @@ def main():
             train_loader.sampler.set_epoch(epoch)
 
         steps_for_this_epoch = min(num_steps - total_steps, max_steps_per_epoch)
-        train_one_epoch(epoch, total_steps, steps_for_this_epoch)
+        train_one_epoch(epoch, total_steps, steps_for_this_epoch, num_micro_batches_per_step)
         total_steps += steps_for_this_epoch
 
         if args.checkpoint_dir is not None and is_stage_master:
@@ -94,7 +94,9 @@ def main():
         print('Finished.')
 
 
-def train_one_epoch(epoch, step, num_steps_for_this_epoch):
+def train_one_epoch(epoch, step, num_steps_for_this_epoch, num_micro_batches_per_step):
+
+    stage.start_comm_threads(num_steps_for_this_epoch*num_micro_batches_per_step) 
     stage.stage_module.train()
     train_iterator = iter(train_loader)
 
@@ -157,8 +159,12 @@ if __name__ == "__main__":
                                                process_group=grad_sync_groups[stage_id],
                                                broadcast_buffers=False)
         dist.barrier()
+
+    tensor_shape = (args.micro_batch_size, args.max_seq_length, config.hidden_size)
     stage = PipelineStage(stage_id=stage_id,
                           num_stages=num_stages,
+                          input_tensor_shape=tensor_shape,
+                          output_tensor_shape=tensor_shape,
                           stage_module=stage_module,
                           num_batch_dims=2,  # batch_size, max_seq_length
                           prev_rank=rank-num_ranks_per_stage if stage_id > 0 else None,
