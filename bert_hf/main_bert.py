@@ -171,6 +171,8 @@ if __name__ == "__main__":
                           next_rank=rank+num_ranks_per_stage if stage_id < num_stages-1 else None,
                           pipeline_method=args.pipeline_method)
 
+    stage.init_comm_queues()
+
     # Prepare BERT dataset
     tokenizer = BertTokenizer(args.vocab_path, do_lower_case=args.do_lower_case)
     train_dataset = BERTDataset(args.corpus_path,

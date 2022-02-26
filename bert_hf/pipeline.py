@@ -97,7 +97,7 @@ class PipelineStage:
     def keys_of_next_stage(self):
         return [v[0] for v in self.keys_and_sizes_of_next_stage]
 
-    def setup_queues(self):
+    def init_comm_queues(self):
         if self.is_first_stage:
             for key in self.keys_of_next_stage:
                 self.backward_recv_queues[key] = threadsafe_queue.Queue()
