@@ -165,11 +165,12 @@ class PipelineStage:
 
     def call_forward(self, input_source: OrderedDict[str, Tensor]):
         if not self.is_first_stage:
+            #inputs = self._get_zero_inputs(input_source)
+            #self._receive_inputs(inputs)
+
             inputs = collections.OrderedDict()
             for key in self.keys_from_prev_stage:
                 inputs[key] = self.recv_inputs_from_queue(key)
-            #inputs = self._get_zero_inputs(input_source)
-            #self._receive_inputs(inputs)
         else:
             inputs = {}
         for key in self.keys_from_source:
@@ -179,6 +180,7 @@ class PipelineStage:
         outputs = self.stage_module(**inputs)
         if not self.is_last_stage:
             #self._send_outputs(outputs)
+
             for key in outputs:
                 self.send_outputs_to_queue(key, outputs[key])
         else:
@@ -199,6 +201,7 @@ class PipelineStage:
             #    tensor.grad = torch.zeros_like(tensor)
             #self._receive_output_grads(outputs)
             #grad_tensors = tuple(tensor.grad for tensor in outputs.values())
+
             grad_dict = {}
             for key in outputs:
                 grad_dict[key] = self.recv_output_grads_from_queue(key)
@@ -210,6 +213,7 @@ class PipelineStage:
             torch.autograd.backward(out_tensors, grad_tensors=grad_tensors)
         if not self.is_first_stage:
             #self._send_input_grads(inputs)
+
             for key in self.keys_from_prev_stage:
                 self.send_input_grads_to_queue(key, inputs[key].grad)
 
