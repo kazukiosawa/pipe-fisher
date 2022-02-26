@@ -202,7 +202,7 @@ class PipelineStage:
             grad_dict = {}
             for key in outputs:
                 grad_dict[key] = self.recv_output_grads_from_queue(key)
-            grad_tensors = tuple(grad_dict[key] for key in grad_dict) # Shigang: Is this safe for autograd.backward?
+            grad_tensors = tuple(grad_dict[key] for key in grad_dict)
 
             assert len(out_tensors) == len(grad_tensors), 'output_grads are not set yet.'
 
