@@ -78,6 +78,10 @@ class StartingStage(BertModel, StageModule):
     def keys_and_sizes_from_prev_stage(self):
         return []
 
+    @property
+    def keys_and_sizes_of_next_stage(self):
+        return [('hidden_states', (self.config.hidden_size,))]
+
 
 class IntermediateStage(BertPreTrainedModel, StageModule, ModuleUtilsMixin):
     def __init__(self, config):
@@ -102,6 +106,10 @@ class IntermediateStage(BertPreTrainedModel, StageModule, ModuleUtilsMixin):
 
     @property
     def keys_and_sizes_from_prev_stage(self):
+        return [('hidden_states', (self.config.hidden_size,))]
+
+    @property
+    def keys_and_sizes_of_next_stage(self):
         return [('hidden_states', (self.config.hidden_size,))]
 
 
@@ -134,3 +142,7 @@ class EndingStage(BertPreTrainedModel, StageModule, ModuleUtilsMixin):
     @property
     def keys_and_sizes_from_prev_stage(self):
         return [('hidden_states', (self.config.hidden_size,))]
+
+    @property
+    def keys_and_sizes_of_next_stage(self):
+        return []
