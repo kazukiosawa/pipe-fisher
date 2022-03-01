@@ -30,14 +30,20 @@ class StageModule(nn.Module):
 
 def recv_comm_thread(num_iterations, queue, src_rank, tag, tensor_shape, device):
     for i in range(num_iterations):
-        recv_tensor = torch.zeros(tensor_shape, device=device, requires_grad=True)
+        #recv_tensor = torch.zeros(tensor_shape, device=device, requires_grad=True)
+        #dist.recv(tensor=recv_tensor, src=src_rank, tag=tag)
+        #queue.add(recv_tensor)
+
+        recv_tensor = torch.zeros(tensor_shape, requires_grad=True)
         dist.recv(tensor=recv_tensor, src=src_rank, tag=tag)
-        queue.add(recv_tensor)
+        queue.add(recv_tensor.cuda())
 
 def send_comm_thread(num_iterations, queue, dst_rank, tag):
     for i in range(num_iterations):
-        tensor = queue.remove()
-        dist.send(tensor=tensor, dst=dst_rank, tag=tag)
+        send_tensor = queue.remove()
+
+        send_tensor = send_tensor.cpu()
+        dist.send(tensor=send_tensor, dst=dst_rank, tag=tag)
 
 
 class PipelineStage:
@@ -209,13 +215,24 @@ class PipelineStage:
 
             assert len(out_tensors) == len(grad_tensors), 'output_grads are not set yet.'
 
+        input_grads = {}
+        def hook_wrapper(key):
+            def hook(input_gradient):
+                input_grads[key] = input_gradient
+            return hook
+
+        if not self.is_first_stage:
+            for key in self.keys_from_prev_stage:
+                inputs[key].register_hook(hook_wrapper(key))
+
         with self.no_sync_if_need(no_sync):
             torch.autograd.backward(out_tensors, grad_tensors=grad_tensors)
         if not self.is_first_stage:
             #self._send_input_grads(inputs)
 
             for key in self.keys_from_prev_stage:
-                self.send_input_grads_to_queue(key, inputs[key].grad)
+                #self.send_input_grads_to_queue(key, inputs[key].grad)
+                self.send_input_grads_to_queue(key, input_grads[key])
 
         del inputs, outputs
 

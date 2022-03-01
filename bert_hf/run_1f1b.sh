@@ -32,6 +32,7 @@ srun python main_bert.py \
         --max_seq_length 128 \
         --micro_batch_size 32 \
         --num_optimization_steps 8 \
-        --pipeline_method 'gpipe' \
+        --pipeline_method '1f1b' \
         --seed 2 \
+	--dist_backend 'gloo' \
 
