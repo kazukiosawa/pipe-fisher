@@ -96,21 +96,41 @@ def main():
 
 def train_one_epoch(epoch, step, num_steps_for_this_epoch, num_micro_batches_per_step):
 
-    stage.start_comm_threads(num_steps_for_this_epoch*num_micro_batches_per_step) 
-    stage.stage_module.train()
+    if args.pipeline_method == PIPELINE_CHIMERA: 
+        stage.start_comm_threads(num_steps_for_this_epoch*num_micro_batches_per_step//2) 
+        stage.stage_module.train()
+        up_pipe_stage.start_comm_threads(num_steps_for_this_epoch*num_micro_batches_per_step//2) 
+        up_pipe_stage.stage_module.train()
+    else:
+        stage.start_comm_threads(num_steps_for_this_epoch*num_micro_batches_per_step) 
+        stage.stage_module.train()
+
     train_iterator = iter(train_loader)
 
     for i in range(num_steps_for_this_epoch):
         dist.barrier()
         optimizer.zero_grad()
+        if args.pipeline_method == PIPELINE_CHIMERA: 
+            up_pipe_optimizer.zero_grad()
 
         loss = stage.call_pipeline(train_iterator, num_micro_batches_per_step)
 
-        optimizer.step()
+        if args.pipeline_method == PIPELINE_CHIMERA: 
+            if stage_id < num_stages // 2:
+                up_pipe_optimizer.step()
+                optimizer.step()
+            else:
+                optimizer.step()
+                up_pipe_optimizer.step()
+        else:
+            optimizer.step()
 
         tensor = torch.tensor(loss, device=stage.device)
         dist.reduce(tensor, dst=0)
-        tensor /= (num_replicas * num_micro_batches_per_step)
+        if args.pipeline_method == PIPELINE_CHIMERA: 
+            tensor /= (num_replicas * num_micro_batches_per_step / 2) # each pipeline handles half micro_batches
+        else:
+            tensor /= (num_replicas * num_micro_batches_per_step)
         if is_master:
             print(f'epoch{epoch+1} step{step+i+1} loss = {float(tensor)}')
 
@@ -133,26 +153,73 @@ if __name__ == "__main__":
     torch.manual_seed(args.seed)
     torch.cuda.manual_seed(args.seed)
 
-    # Setup stage_id based on rank
     num_stages = args.num_stages
     assert world_size % num_stages == 0
     num_ranks_per_stage = int(world_size / num_stages)
+    num_replicas = num_ranks_per_stage
+    sync_group_size = num_replicas*2 if args.pipeline_method == PIPELINE_CHIMERA else num_replicas
+
+    config = BertConfig.from_json_file(args.bert_config_path)
+    tensor_shape = (args.micro_batch_size, args.max_seq_length, config.hidden_size)
+    up_pipe_stage = None
+
+    up_pipe_stage_id = (world_size-1-rank) // num_ranks_per_stage
+    up_pipe_stage_to_ranks_map = {_stage_id: [] for _stage_id in range(num_stages)}
+    for _rank in range(world_size):
+        _stage_id = (world_size-1-_rank) // num_ranks_per_stage
+        up_pipe_stage_to_ranks_map[_stage_id].append(_rank)
+
     stage_id = rank // num_ranks_per_stage
     stage_to_ranks_map = {_stage_id: [] for _stage_id in range(num_stages)}
     for _rank in range(world_size):
         _stage_id = _rank // num_ranks_per_stage
         stage_to_ranks_map[_stage_id].append(_rank)
+
+    #grad_sync_groups = []
+    #if args.pipeline_method == PIPELINE_CHIMERA: 
+    #    for _stage_id in range(num_stages):
+    #        grad_sync_groups.append(dist.new_group(up_pipe_stage_to_ranks_map[_stage_id] + stage_to_ranks_map[_stage_id]))
+    #else:
+    #    for _stage_id in range(num_stages):
+    #        grad_sync_groups.append(dist.new_group(stage_to_ranks_map[_stage_id]))
+
+    up_pipe_grad_sync_groups = []
+    grad_sync_groups = []
+    for _stage_id in range(num_stages):
+        up_pipe_grad_sync_groups.append(dist.new_group(up_pipe_stage_to_ranks_map[_stage_id]))
+        grad_sync_groups.append(dist.new_group(stage_to_ranks_map[_stage_id]))
+
+    if args.pipeline_method == PIPELINE_CHIMERA: 
+
+        # Prepare BERT up pipeline stage
+        up_pipe_stage_module = get_stage_bert_for_pretraining(up_pipe_stage_id, num_stages, config)
+        up_pipe_stage_module.to(device)
+        up_pipe_stage_module = DistributedDataParallel(up_pipe_stage_module,
+                                                       device_ids=[device],
+                                                       output_device=device,
+                                                       process_group=up_pipe_grad_sync_groups[up_pipe_stage_id],
+                                                       broadcast_buffers=False)
+        dist.barrier()
+
+        up_pipe_stage = PipelineStage(stage_id=up_pipe_stage_id,
+                                      num_stages=args.num_stages,
+                                      input_tensor_shape=tensor_shape,
+                                      output_tensor_shape=tensor_shape,
+                                      stage_module=up_pipe_stage_module,
+                                      num_batch_dims=2,  # batch_size, max_seq_length
+                                      prev_rank=rank+num_ranks_per_stage if up_pipe_stage_id > 0 else None,
+                                      next_rank=rank-num_ranks_per_stage if up_pipe_stage_id < num_stages-1 else None,
+                                      pipeline_method=args.pipeline_method,
+                                      is_up_pipe=True,
+                                      up_pipe_stage=None)
+
+
     is_stage_master = rank % num_ranks_per_stage == 0
-    num_replicas = num_ranks_per_stage
 
     # Prepare BERT pipeline stage
-    config = BertConfig.from_json_file(args.bert_config_path)
     stage_module = get_stage_bert_for_pretraining(stage_id, num_stages, config)
     stage_module.to(device)
-    if num_replicas > 1:
-        grad_sync_groups = []
-        for _stage_id in range(num_stages):
-            grad_sync_groups.append(dist.new_group(stage_to_ranks_map[_stage_id]))
+    if sync_group_size > 1:
         stage_module = DistributedDataParallel(stage_module,
                                                device_ids=[device],
                                                output_device=device,
@@ -160,7 +227,6 @@ if __name__ == "__main__":
                                                broadcast_buffers=False)
         dist.barrier()
 
-    tensor_shape = (args.micro_batch_size, args.max_seq_length, config.hidden_size)
     stage = PipelineStage(stage_id=stage_id,
                           num_stages=num_stages,
                           input_tensor_shape=tensor_shape,
@@ -169,9 +235,13 @@ if __name__ == "__main__":
                           num_batch_dims=2,  # batch_size, max_seq_length
                           prev_rank=rank-num_ranks_per_stage if stage_id > 0 else None,
                           next_rank=rank+num_ranks_per_stage if stage_id < num_stages-1 else None,
-                          pipeline_method=args.pipeline_method)
+                          pipeline_method=args.pipeline_method,
+                          is_up_pipe=False,
+                          up_pipe_stage=up_pipe_stage)
 
     stage.init_comm_queues()
+    if args.pipeline_method == PIPELINE_CHIMERA: 
+        up_pipe_stage.init_comm_queues()
 
     # Prepare BERT dataset
     tokenizer = BertTokenizer(args.vocab_path, do_lower_case=args.do_lower_case)
@@ -219,6 +289,21 @@ if __name__ == "__main__":
                          lr=args.learning_rate,
                          warmup=args.warmup_proportion,
                          t_total=num_steps)
+
+    if args.pipeline_method == PIPELINE_CHIMERA: 
+        decay_param_group = {'params': [], 'weight_decay': args.weight_decay}
+        no_decay_param_group = {'params': [], 'weight_decay': 0.}
+        for module in up_pipe_stage_module.modules():
+            if isinstance(module, nn.LayerNorm):
+                no_decay_param_group['params'].extend(list(module.parameters()))
+            elif isinstance(module, (nn.Linear, nn.Embedding)):
+                if hasattr(module, 'bias') and module.bias is not None:
+                    no_decay_param_group['params'].append(module.bias)
+                decay_param_group['params'].append(module.weight)
+        up_pipe_optimizer = BertAdam([decay_param_group, no_decay_param_group],
+                                     lr=args.learning_rate,
+                                     warmup=args.warmup_proportion,
+                                     t_total=num_steps)
 
     dist.barrier()
     if is_master:

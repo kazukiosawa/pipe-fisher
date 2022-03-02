@@ -57,7 +57,8 @@ class PipelineStage:
                  prev_rank: int = None,
                  next_rank: int = None,
                  pipeline_method: str = None,
-                 is_up_pipe: bool = False):
+                 is_up_pipe: bool = False,
+                 up_pipe_stage = None):
         assert dist.is_initialized(), 'torch.distributed needs to be initialized.'
         assert num_stages > 1, 'num_stages has to be > 1.'
         assert stage_id in range(num_stages), 'stage_id has be in range(num_stage).'
@@ -74,6 +75,9 @@ class PipelineStage:
         self.total_loss = 0.
         self.pipeline_method = pipeline_method
         self.is_up_pipe = is_up_pipe
+        if not self.is_up_pipe and self.pipeline_method == PIPELINE_CHIMERA:
+            assert up_pipe_stage is not None, 'Up pipeline should be created.'
+        self.up_pipe_stage = up_pipe_stage
         self.tag = 2 if is_up_pipe else 1
 
         self.forward_recv_queues = {}
@@ -275,6 +279,8 @@ class PipelineStage:
             _call_pipeline = self._call_1f1b_pipeline
         elif pipeline_method == PIPELINE_GPIPE:
             _call_pipeline = self._call_gpipe_pipeline
+        elif pipeline_method == PIPELINE_CHIMERA:
+            _call_pipeline = self._call_chimera_pipeline
         else:
             raise ValueError(f'Invalid pipeline_method: {pipeline_method}')
 
@@ -288,19 +294,101 @@ class PipelineStage:
         return self.call_pipeline(data_iterator, num_micro_batches, PIPELINE_1F1B)
 
     def _call_1f1b_pipeline(self, data_iterator: Iterator, num_micro_batches):
-        num_warmup_steps = self.num_stages - self.stage_id
+        num_warmup_steps = self.num_stages - self.stage_id - 1
 
         for _ in range(num_warmup_steps):
             self.call_forward(next(data_iterator))
-        for _ in range(num_micro_batches - num_warmup_steps):
-            self.call_backward()
+        for _ in range(num_micro_batches - num_warmup_steps - 1):
             self.call_forward(next(data_iterator))
+            self.call_backward()
+        self.call_forward(next(data_iterator))
         for _ in range(num_warmup_steps):
             self.call_backward()
+        self.call_backward(no_sync=False)
 
     def _call_gpipe_pipeline(self, data_iterator: Iterator, num_micro_batches):
         for _ in range(num_micro_batches):
             self.call_forward(next(data_iterator))
 
-        for _ in range(num_micro_batches):
+        for _ in range(num_micro_batches-1):
             self.call_backward()
+
+        self.call_backward(no_sync=False)
+
+    def _call_chimera_pipeline(self, data_iterator: Iterator, num_micro_batches):
+        assert self.num_stages % 2 == 0, 'The number of stages should be an even value.'
+        assert num_micro_batches % self.num_stages == 0, 'Num_micro_batches should be a multiple of num_stages.'
+
+        half_stages = self.num_stages // 2
+        first_half = False
+        if self.stage_id // half_stages == 0:
+            first_half = True
+
+        schedule_number_a = half_stages - self.stage_id
+        if schedule_number_a <= 0:
+            schedule_number_a = -schedule_number_a
+            schedule_number_a += 1
+
+        schedule_number_b = half_stages - schedule_number_a
+
+        for step in range(schedule_number_a):
+            if first_half:
+                self.call_forward(next(data_iterator))
+            else:
+                self.up_pipe_stage.call_forward(next(data_iterator))
+
+        for step in range(schedule_number_b):
+            if first_half:
+                self.up_pipe_stage.call_forward(next(data_iterator))
+                self.call_forward(next(data_iterator))
+            else:
+                self.call_forward(next(data_iterator))
+                self.up_pipe_stage.call_forward(next(data_iterator))
+
+        for step in range(schedule_number_a-1):
+            if first_half:
+                self.up_pipe_stage.call_forward(next(data_iterator))
+                self.up_pipe_stage.call_backward()
+            else:
+                self.call_forward(next(data_iterator))
+                self.call_backward()
+
+        if first_half:
+            self.up_pipe_stage.call_forward(next(data_iterator))
+            if(self.up_pipe_stage.stage_id == self.num_stages-1):
+                self.up_pipe_stage.call_backward(no_sync=False)
+            else:
+                self.up_pipe_stage.call_backward()
+        else:
+            self.call_forward(next(data_iterator))
+            if(self.stage_id == self.num_stages-1):
+                self.call_backward(no_sync=False)
+            else:
+                self.call_backward()
+
+        if(schedule_number_b > 0):
+            for step in range(schedule_number_b-1):
+                if first_half:
+                    self.call_backward()
+                    self.up_pipe_stage.call_backward()
+                else:
+                    self.up_pipe_stage.call_backward()
+                    self.call_backward()
+
+            if first_half:
+                self.call_backward()
+                self.up_pipe_stage.call_backward(no_sync=False)
+            else:
+                self.up_pipe_stage.call_backward()
+                self.call_backward(no_sync=False)
+
+        for step in range(schedule_number_a-1):
+            if first_half:
+                self.call_backward()
+            else:
+                self.up_pipe_stage.call_backward()
+
+        if first_half:
+            self.call_backward(no_sync=False)
+        else:
+            self.up_pipe_stage.call_backward(no_sync=False)
