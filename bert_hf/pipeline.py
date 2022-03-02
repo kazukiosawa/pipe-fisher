@@ -162,16 +162,18 @@ class PipelineStage:
     def call_1f1b_pipeline(self, data_iterator: Iterator, num_micro_batches):
         return self.call_pipeline(data_iterator, num_micro_batches, PIPELINE_1F1B)
 
-    def _call_1f1b_pipeline(self, data_iterator: Iterator, num_micro_batches):
-        num_warmup_steps = self.num_stages - self.stage_id
+    def _call_1f1b_pipeline(self, data_iterator: Iterator, num_micro_batches):  
+        num_warmup_steps = self.num_stages - self.stage_id - 1
 
         for _ in range(num_warmup_steps):
             self.call_forward(next(data_iterator))
-        for _ in range(num_micro_batches - num_warmup_steps):
-            self.call_backward()
+        for _ in range(num_micro_batches - num_warmup_steps - 1):
             self.call_forward(next(data_iterator))
+            self.call_backward()
+        self.call_forward(next(data_iterator))
         for _ in range(num_warmup_steps):
             self.call_backward()
+        self.call_backward(no_sync=False)
 
     def _call_gpipe_pipeline(self, data_iterator: Iterator, num_micro_batches):
         for _ in range(num_micro_batches):
