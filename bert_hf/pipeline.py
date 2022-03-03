@@ -28,7 +28,6 @@ class StageModule(nn.Module):
     def keys_and_sizes_from_prev_stage(self) -> List[Tuple[str, tuple]]:
         raise NotImplementedError
 
-
 def recv_comm_thread(num_iterations, queue, src_rank, tag, tensor_shape, device):
     for i in range(num_iterations):
         #recv_tensor = torch.zeros(tensor_shape, device=device, requires_grad=True)
@@ -42,7 +41,6 @@ def send_comm_thread(num_iterations, queue, dst_rank, tag):
 
         send_tensor = send_tensor.cpu()
         dist.send(tensor=send_tensor, dst=dst_rank, tag=tag)
-
 
 class PipelineStage:
     def __init__(self,
@@ -135,7 +133,6 @@ class PipelineStage:
             for key in self.keys_from_prev_stage:
                 self.forward_recv_queues[key] = threadsafe_queue.Queue()
                 self.backward_send_queues[key] = threadsafe_queue.Queue()
-
 
     def start_comm_thread(self, func, func_args):
         comm_thread = threading.Thread(target=func, args=func_args)
@@ -266,7 +263,8 @@ class PipelineStage:
         packed_tensor = parameters_to_vector(grads)
         dist.all_reduce(packed_tensor, group=self.grad_sync_group)
         packed_tensor /= self.grad_sync_group.size()
-        vector_to_parameters(packed_tensor, grads) 
+        vector_to_parameters(packed_tensor, grads)
+
     def call_pipeline(self, data_iterator: Iterator, num_micro_batches, pipeline_method=None):
         if pipeline_method is None:
             pipeline_method = self.pipeline_method
