@@ -7,6 +7,7 @@ import torch
 from torch import Tensor
 from torch import nn
 from torch.nn.parallel import DistributedDataParallel
+from torch.nn.utils import parameters_to_vector, vector_to_parameters
 import torch.distributed as dist
 
 import threading
@@ -31,9 +32,6 @@ class StageModule(nn.Module):
 def recv_comm_thread(num_iterations, queue, src_rank, tag, tensor_shape, device):
     for i in range(num_iterations):
         #recv_tensor = torch.zeros(tensor_shape, device=device, requires_grad=True)
-        #dist.recv(tensor=recv_tensor, src=src_rank, tag=tag)
-        #queue.add(recv_tensor)
-
         recv_tensor = torch.zeros(tensor_shape, requires_grad=True)
         dist.recv(tensor=recv_tensor, src=src_rank, tag=tag)
         queue.add(recv_tensor.cuda())
@@ -56,6 +54,7 @@ class PipelineStage:
                  num_batch_dims: int = 1,
                  prev_rank: int = None,
                  next_rank: int = None,
+                 grad_sync_group: dist.ProcessGroup = None,
                  pipeline_method: str = None,
                  is_up_pipe: bool = False,
                  up_pipe_stage = None):
@@ -71,6 +70,7 @@ class PipelineStage:
         self.input_output_queue: Deque[Tuple[OrderedDict[str, Tensor], OrderedDict[str, Tensor]]] = deque()
         self.prev_rank = prev_rank
         self.next_rank = next_rank
+        self.grad_sync_group = grad_sync_group
         self.device = next(stage_module.parameters()).device
         self.total_loss = 0.
         self.pipeline_method = pipeline_method
@@ -175,9 +175,6 @@ class PipelineStage:
 
     def call_forward(self, input_source: OrderedDict[str, Tensor]):
         if not self.is_first_stage:
-            #inputs = self._get_zero_inputs(input_source)
-            #self._receive_inputs(inputs)
-
             inputs = collections.OrderedDict()
             for key in self.keys_from_prev_stage:
                 inputs[key] = self.recv_inputs_from_queue(key)
@@ -189,8 +186,6 @@ class PipelineStage:
 
         outputs = self.stage_module(**inputs)
         if not self.is_last_stage:
-            #self._send_outputs(outputs)
-
             for key in outputs:
                 self.send_outputs_to_queue(key, outputs[key])
         else:
@@ -207,11 +202,6 @@ class PipelineStage:
         out_tensors = tuple(outputs.values())
         grad_tensors = None
         if not self.is_last_stage:
-            #for tensor in outputs.values():
-            #    tensor.grad = torch.zeros_like(tensor)
-            #self._receive_output_grads(outputs)
-            #grad_tensors = tuple(tensor.grad for tensor in outputs.values())
-
             grad_dict = {}
             for key in outputs:
                 grad_dict[key] = self.recv_output_grads_from_queue(key)
@@ -232,10 +222,7 @@ class PipelineStage:
         with self.no_sync_if_need(no_sync):
             torch.autograd.backward(out_tensors, grad_tensors=grad_tensors)
         if not self.is_first_stage:
-            #self._send_input_grads(inputs)
-
             for key in self.keys_from_prev_stage:
-                #self.send_input_grads_to_queue(key, inputs[key].grad)
                 self.send_input_grads_to_queue(key, input_grads[key])
 
         del inputs, outputs
@@ -272,6 +259,14 @@ class PipelineStage:
         for key in self.keys_from_prev_stage:
             dist.send(inputs[key].grad, dst=self.prev_rank)
 
+    def sync_grad(self):
+        assert self.grad_sync_group is not None, 'grad_sync_group is not specified.'
+        dist.barrier(group=self.grad_sync_group)
+        grads = [p.grad for p in self.stage_module.parameters() if p.grad is not None]
+        packed_tensor = parameters_to_vector(grads)
+        dist.all_reduce(packed_tensor, group=self.grad_sync_group)
+        packed_tensor /= self.grad_sync_group.size()
+        vector_to_parameters(packed_tensor, grads) 
     def call_pipeline(self, data_iterator: Iterator, num_micro_batches, pipeline_method=None):
         if pipeline_method is None:
             pipeline_method = self.pipeline_method
@@ -304,16 +299,20 @@ class PipelineStage:
         self.call_forward(next(data_iterator))
         for _ in range(num_warmup_steps):
             self.call_backward()
-        self.call_backward(no_sync=False)
+        self.call_backward()
+        
+        if self.grad_sync_group is not None and self.grad_sync_group.size() > 1:
+            self.sync_grad()
 
     def _call_gpipe_pipeline(self, data_iterator: Iterator, num_micro_batches):
         for _ in range(num_micro_batches):
             self.call_forward(next(data_iterator))
 
-        for _ in range(num_micro_batches-1):
+        for _ in range(num_micro_batches):
             self.call_backward()
 
-        self.call_backward(no_sync=False)
+        if self.grad_sync_group is not None and self.grad_sync_group.size() > 1:
+            self.sync_grad()
 
     def _call_chimera_pipeline(self, data_iterator: Iterator, num_micro_batches):
         assert self.num_stages % 2 == 0, 'The number of stages should be an even value.'
@@ -356,13 +355,15 @@ class PipelineStage:
         if first_half:
             self.up_pipe_stage.call_forward(next(data_iterator))
             if(self.up_pipe_stage.stage_id == self.num_stages-1):
-                self.up_pipe_stage.call_backward(no_sync=False)
+                self.up_pipe_stage.call_backward()
+                self.up_pipe_stage.sync_grad()
             else:
                 self.up_pipe_stage.call_backward()
         else:
             self.call_forward(next(data_iterator))
             if(self.stage_id == self.num_stages-1):
-                self.call_backward(no_sync=False)
+                self.call_backward()
+                self.sync_grad()
             else:
                 self.call_backward()
 
@@ -377,10 +378,12 @@ class PipelineStage:
 
             if first_half:
                 self.call_backward()
-                self.up_pipe_stage.call_backward(no_sync=False)
+                self.up_pipe_stage.call_backward()
+                self.up_pipe_stage.sync_grad()
             else:
                 self.up_pipe_stage.call_backward()
-                self.call_backward(no_sync=False)
+                self.call_backward()
+                self.sync_grad()
 
         for step in range(schedule_number_a-1):
             if first_half:
@@ -389,6 +392,8 @@ class PipelineStage:
                 self.up_pipe_stage.call_backward()
 
         if first_half:
-            self.call_backward(no_sync=False)
+            self.call_backward()
+            self.sync_grad()
         else:
-            self.up_pipe_stage.call_backward(no_sync=False)
+            self.up_pipe_stage.call_backward()
+            self.up_pipe_stage.sync_grad()

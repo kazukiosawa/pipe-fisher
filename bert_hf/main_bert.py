@@ -175,31 +175,19 @@ if __name__ == "__main__":
         _stage_id = _rank // num_ranks_per_stage
         stage_to_ranks_map[_stage_id].append(_rank)
 
-    #grad_sync_groups = []
-    #if args.pipeline_method == PIPELINE_CHIMERA: 
-    #    for _stage_id in range(num_stages):
-    #        grad_sync_groups.append(dist.new_group(up_pipe_stage_to_ranks_map[_stage_id] + stage_to_ranks_map[_stage_id]))
-    #else:
-    #    for _stage_id in range(num_stages):
-    #        grad_sync_groups.append(dist.new_group(stage_to_ranks_map[_stage_id]))
-
-    up_pipe_grad_sync_groups = []
     grad_sync_groups = []
-    for _stage_id in range(num_stages):
-        up_pipe_grad_sync_groups.append(dist.new_group(up_pipe_stage_to_ranks_map[_stage_id]))
-        grad_sync_groups.append(dist.new_group(stage_to_ranks_map[_stage_id]))
+    if args.pipeline_method == PIPELINE_CHIMERA: 
+        for _stage_id in range(num_stages):
+            grad_sync_groups.append(dist.new_group(up_pipe_stage_to_ranks_map[_stage_id] + stage_to_ranks_map[_stage_id]))
+    else:
+        for _stage_id in range(num_stages):
+            grad_sync_groups.append(dist.new_group(stage_to_ranks_map[_stage_id]))
 
     if args.pipeline_method == PIPELINE_CHIMERA: 
 
         # Prepare BERT up pipeline stage
         up_pipe_stage_module = get_stage_bert_for_pretraining(up_pipe_stage_id, num_stages, config)
         up_pipe_stage_module.to(device)
-        up_pipe_stage_module = DistributedDataParallel(up_pipe_stage_module,
-                                                       device_ids=[device],
-                                                       output_device=device,
-                                                       process_group=up_pipe_grad_sync_groups[up_pipe_stage_id],
-                                                       broadcast_buffers=False)
-        dist.barrier()
 
         up_pipe_stage = PipelineStage(stage_id=up_pipe_stage_id,
                                       num_stages=args.num_stages,
@@ -209,23 +197,16 @@ if __name__ == "__main__":
                                       num_batch_dims=2,  # batch_size, max_seq_length
                                       prev_rank=rank+num_ranks_per_stage if up_pipe_stage_id > 0 else None,
                                       next_rank=rank-num_ranks_per_stage if up_pipe_stage_id < num_stages-1 else None,
+                                      grad_sync_group=grad_sync_groups[up_pipe_stage_id],
                                       pipeline_method=args.pipeline_method,
                                       is_up_pipe=True,
                                       up_pipe_stage=None)
-
 
     is_stage_master = rank % num_ranks_per_stage == 0
 
     # Prepare BERT pipeline stage
     stage_module = get_stage_bert_for_pretraining(stage_id, num_stages, config)
     stage_module.to(device)
-    if sync_group_size > 1:
-        stage_module = DistributedDataParallel(stage_module,
-                                               device_ids=[device],
-                                               output_device=device,
-                                               process_group=grad_sync_groups[stage_id],
-                                               broadcast_buffers=False)
-        dist.barrier()
 
     stage = PipelineStage(stage_id=stage_id,
                           num_stages=num_stages,
@@ -235,6 +216,7 @@ if __name__ == "__main__":
                           num_batch_dims=2,  # batch_size, max_seq_length
                           prev_rank=rank-num_ranks_per_stage if stage_id > 0 else None,
                           next_rank=rank+num_ranks_per_stage if stage_id < num_stages-1 else None,
+                          grad_sync_group=grad_sync_groups[stage_id],
                           pipeline_method=args.pipeline_method,
                           is_up_pipe=False,
                           up_pipe_stage=up_pipe_stage)
