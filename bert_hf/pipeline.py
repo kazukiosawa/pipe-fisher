@@ -317,7 +317,7 @@ class PipelineStage:
     def _call_chimera_pipeline(self, data_iterator: Iterator, num_micro_batches):
         assert self.num_stages % 2 == 0, 'The number of stages should be an even value.'
         assert num_micro_batches % self.num_stages == 0, 'Num_micro_batches should be a multiple of num_stages.'
-
+        acc_steps = num_micro_batches // self.num_stages        
         half_stages = self.num_stages // 2
         first_half = False
         if self.stage_id // half_stages == 0:
@@ -330,45 +330,39 @@ class PipelineStage:
 
         schedule_number_b = half_stages - schedule_number_a
 
-        for step in range(schedule_number_a):
-            if first_half:
-                self.call_forward(next(data_iterator))
+        for acc_step in range(acc_steps):
+            if acc_step == 0:
+                for step in range(schedule_number_a):
+                    if first_half:
+                        self.call_forward(next(data_iterator))
+                    else:
+                        self.up_pipe_stage.call_forward(next(data_iterator))
             else:
-                self.up_pipe_stage.call_forward(next(data_iterator))
+                for step in range(schedule_number_a):
+                    if first_half:
+                        self.call_backward()
+                        self.call_forward(next(data_iterator))
+                    else:
+                        self.up_pipe_stage.call_backward()
+                        self.up_pipe_stage.call_forward(next(data_iterator))
 
-        for step in range(schedule_number_b):
-            if first_half:
-                self.up_pipe_stage.call_forward(next(data_iterator))
-                self.call_forward(next(data_iterator))
-            else:
-                self.call_forward(next(data_iterator))
-                self.up_pipe_stage.call_forward(next(data_iterator))
+            for step in range(schedule_number_b):
+                if first_half:
+                    self.up_pipe_stage.call_forward(next(data_iterator))
+                    self.call_forward(next(data_iterator))
+                else:
+                    self.call_forward(next(data_iterator))
+                    self.up_pipe_stage.call_forward(next(data_iterator))
 
-        for step in range(schedule_number_a-1):
-            if first_half:
-                self.up_pipe_stage.call_forward(next(data_iterator))
-                self.up_pipe_stage.call_backward()
-            else:
-                self.call_forward(next(data_iterator))
-                self.call_backward()
+            for step in range(schedule_number_a):
+                if first_half:
+                    self.up_pipe_stage.call_forward(next(data_iterator))
+                    self.up_pipe_stage.call_backward()
+                else:
+                    self.call_forward(next(data_iterator))
+                    self.call_backward()
 
-        if first_half:
-            self.up_pipe_stage.call_forward(next(data_iterator))
-            if(self.up_pipe_stage.stage_id == self.num_stages-1):
-                self.up_pipe_stage.call_backward()
-                self.up_pipe_stage.sync_grad()
-            else:
-                self.up_pipe_stage.call_backward()
-        else:
-            self.call_forward(next(data_iterator))
-            if(self.stage_id == self.num_stages-1):
-                self.call_backward()
-                self.sync_grad()
-            else:
-                self.call_backward()
-
-        if(schedule_number_b > 0):
-            for step in range(schedule_number_b-1):
+            for step in range(schedule_number_b):
                 if first_half:
                     self.call_backward()
                     self.up_pipe_stage.call_backward()
@@ -376,24 +370,27 @@ class PipelineStage:
                     self.up_pipe_stage.call_backward()
                     self.call_backward()
 
-            if first_half:
-                self.call_backward()
-                self.up_pipe_stage.call_backward()
-                self.up_pipe_stage.sync_grad()
-            else:
-                self.up_pipe_stage.call_backward()
-                self.call_backward()
-                self.sync_grad()
+            # early invoke grad_sync
+            if acc_step == acc_steps - 1:
+                if self.stage_id > half_stages:
+                    self.sync_grad()
+                if self.up_pipe_stage.stage_id > half_stages:
+                    self.up_pipe_stage.sync_grad()
 
-        for step in range(schedule_number_a-1):
+        for step in range(schedule_number_a):
             if first_half:
                 self.call_backward()
             else:
                 self.up_pipe_stage.call_backward()
 
-        if first_half:
-            self.call_backward()
+        if self.stage_id == half_stages:
             self.sync_grad()
-        else:
-            self.up_pipe_stage.call_backward()
             self.up_pipe_stage.sync_grad()
+        if self.up_pipe_stage.stage_id == half_stages:
+            self.up_pipe_stage.sync_grad()
+            self.sync_grad()
+
+        if self.stage_id > half_stages:
+            self.up_pipe_stage.sync_grad()
+        if self.up_pipe_stage.stage_id > half_stages:
+            self.sync_grad()
