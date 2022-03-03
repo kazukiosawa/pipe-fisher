@@ -229,7 +229,7 @@ if __name__ == "__main__":
                                 on_memory=args.on_memory)
     if num_replicas > 1:
         rank_in_stage = rank % num_ranks_per_stage
-        train_sampler = DistributedSampler(train_dataset, num_replicas=num_replicas, rank=rank_in_stage)
+        train_sampler = DistributedSampler(train_dataset, num_replicas=num_replicas, rank=rank_in_stage) # DistributedSampler for Chimera?
     else:
         train_sampler = None
     train_loader = DataLoader(train_dataset,
