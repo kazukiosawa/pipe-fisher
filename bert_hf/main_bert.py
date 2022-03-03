@@ -115,15 +115,9 @@ def train_one_epoch(epoch, step, num_steps_for_this_epoch, num_micro_batches_per
 
         loss = stage.call_pipeline(train_iterator, num_micro_batches_per_step)
 
+        optimizer.step()
         if args.pipeline_method == PIPELINE_CHIMERA: 
-            if stage_id < num_stages // 2:
-                up_pipe_optimizer.step()
-                optimizer.step()
-            else:
-                optimizer.step()
-                up_pipe_optimizer.step()
-        else:
-            optimizer.step()
+            up_pipe_optimizer.step()
 
         tensor = torch.tensor(loss, device=stage.device)
         dist.reduce(tensor, dst=0)
