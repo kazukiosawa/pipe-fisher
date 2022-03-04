@@ -154,7 +154,6 @@ if __name__ == "__main__":
     assert world_size % num_stages == 0
     num_ranks_per_stage = int(world_size / num_stages)
     num_replicas = num_ranks_per_stage
-    sync_group_size = num_replicas*2 if args.pipeline_method == PIPELINE_CHIMERA else num_replicas
 
     config = BertConfig.from_json_file(args.bert_config_path)
     tensor_shape = (args.micro_batch_size, args.max_seq_length, config.hidden_size)
@@ -175,10 +174,10 @@ if __name__ == "__main__":
     grad_sync_groups = []
     if args.pipeline_method == PIPELINE_CHIMERA: 
         for _stage_id in range(num_stages):
-            grad_sync_groups.append(dist.new_group(up_pipe_stage_to_ranks_map[_stage_id] + stage_to_ranks_map[_stage_id]))
+            grad_sync_groups.append(dist.new_group(ranks=up_pipe_stage_to_ranks_map[_stage_id] + stage_to_ranks_map[_stage_id], backend='nccl'))
     else:
         for _stage_id in range(num_stages):
-            grad_sync_groups.append(dist.new_group(stage_to_ranks_map[_stage_id]))
+            grad_sync_groups.append(dist.new_group(ranks=stage_to_ranks_map[_stage_id], backend='nccl'))
 
     if args.pipeline_method == PIPELINE_CHIMERA: 
 
