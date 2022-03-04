@@ -86,6 +86,10 @@ class PipelineStage:
         self.forward_send_queues = {}
         self.backward_send_queues = {}
 
+        self.handles = []
+        self.grads = []
+        self.packed_grads = []
+
     @property
     def is_first_stage(self):
         return self.stage_id == 0
@@ -281,6 +285,22 @@ class PipelineStage:
         packed_tensor /= self.grad_sync_group.size()
         vector_to_parameters(packed_tensor, grads)
 
+    def nb_sync_grad(self):
+        assert self.grad_sync_group is not None, 'grad_sync_group is not specified.'
+        dist.barrier(group=self.grad_sync_group)
+        grads = [p.grad for p in self.stage_module.parameters() if p.grad is not None]
+        self.grads.append(grads)
+        packed_tensor = parameters_to_vector(self.grads[-1])
+        self.packed_grads.append(packed_tensor)
+        self.handles.append(dist.all_reduce(self.packed_grads[-1], group=self.grad_sync_group, async_op=True))
+
+    def waitall(self):
+        l = len(self.handles)
+        for _ in range(l):
+            self.handles.pop(0).wait()
+            packed_tensor = self.packed_grads.pop(0) / self.grad_sync_group.size()
+            vector_to_parameters(packed_tensor, self.grads.pop(0))
+
     def call_pipeline(self, data_iterator: Iterator, num_micro_batches, pipeline_method=None):
         if pipeline_method is None:
             pipeline_method = self.pipeline_method
@@ -387,9 +407,9 @@ class PipelineStage:
             # early invoke grad_sync
             if acc_step == acc_steps - 1:
                 if self.stage_id > half_stages:
-                    self.sync_grad()
+                    self.nb_sync_grad()
                 if self.up_pipe_stage.stage_id > half_stages:
-                    self.up_pipe_stage.sync_grad()
+                    self.up_pipe_stage.nb_sync_grad()
 
         for step in range(schedule_number_a):
             if first_half:
@@ -398,13 +418,20 @@ class PipelineStage:
                 self.up_pipe_stage.call_backward()
 
         if self.stage_id == half_stages:
-            self.sync_grad()
-            self.up_pipe_stage.sync_grad()
+            self.nb_sync_grad()
+            self.up_pipe_stage.nb_sync_grad()
         if self.up_pipe_stage.stage_id == half_stages:
-            self.up_pipe_stage.sync_grad()
-            self.sync_grad()
+            self.up_pipe_stage.nb_sync_grad()
+            self.nb_sync_grad()
 
         if self.stage_id > half_stages:
-            self.up_pipe_stage.sync_grad()
+            self.up_pipe_stage.nb_sync_grad()
         if self.up_pipe_stage.stage_id > half_stages:
-            self.sync_grad()
+            self.nb_sync_grad()
+
+        if first_half == True:
+            self.up_pipe_stage.waitall()
+            self.waitall()
+        else:
+            self.waitall()
+            self.up_pipe_stage.waitall()
