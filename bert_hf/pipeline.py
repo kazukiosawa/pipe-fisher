@@ -2,6 +2,7 @@ import collections
 from collections import deque
 from typing import List, Tuple, Deque, OrderedDict, Iterator, Union
 from contextlib import nullcontext
+from contextlib import contextmanager
 
 import torch
 from torch import Tensor
@@ -54,6 +55,7 @@ class PipelineStage:
                  next_rank: int = None,
                  grad_sync_group: dist.ProcessGroup = None,
                  pipeline_method: str = None,
+                 recompute: bool = False,
                  is_up_pipe: bool = False,
                  up_pipe_stage = None):
         assert dist.is_initialized(), 'torch.distributed needs to be initialized.'
@@ -72,6 +74,7 @@ class PipelineStage:
         self.device = next(stage_module.parameters()).device
         self.total_loss = 0.
         self.pipeline_method = pipeline_method
+        self.recompute = recompute
         self.is_up_pipe = is_up_pipe
         if not self.is_up_pipe and self.pipeline_method == PIPELINE_CHIMERA:
             assert up_pipe_stage is not None, 'Up pipeline should be created.'
@@ -116,6 +119,13 @@ class PipelineStage:
     @property
     def keys_of_next_stage(self):
         return [v[0] for v in self.keys_and_sizes_of_next_stage]
+
+    @contextmanager
+    def dummy_handler(self):
+        try:
+            yield
+        finally:
+            pass
 
     def init_comm_queues(self):
         if self.is_first_stage:
@@ -171,30 +181,36 @@ class PipelineStage:
         return self.backward_recv_queues[key].remove()
 
     def call_forward(self, input_source: OrderedDict[str, Tensor]):
-        if not self.is_first_stage:
-            inputs = collections.OrderedDict()
-            for key in self.keys_from_prev_stage:
-                inputs[key] = self.recv_inputs_from_queue(key)
-        else:
-            inputs = {}
-        for key in self.keys_from_source:
-            inputs[key] = input_source[key].to(self.device)
-        assert len(inputs) > 0, 'No input is set.'
+        no_grad_context_handler = self.dummy_handler if not self.recompute else torch.no_grad
 
-        outputs = self.stage_module(**inputs)
-        if not self.is_last_stage:
-            for key in outputs:
-                self.send_outputs_to_queue(key, outputs[key])
-        else:
-            self.total_loss += float(outputs['loss'])
+        with no_grad_context_handler():
+            if not self.is_first_stage:
+                inputs = collections.OrderedDict()
+                for key in self.keys_from_prev_stage:
+                    inputs[key] = self.recv_inputs_from_queue(key)
+            else:
+                inputs = {}
+            for key in self.keys_from_source:
+                inputs[key] = input_source[key].to(self.device)
+            assert len(inputs) > 0, 'No input is set.'
 
-        # push inputs/outputs to the queue
-        self.input_output_queue.append((inputs, outputs))
+            outputs = self.stage_module(**inputs)
+            if not self.is_last_stage:
+                for key in outputs:
+                    self.send_outputs_to_queue(key, outputs[key])
+            else:
+                self.total_loss += float(outputs['loss'])
+
+            # push inputs/outputs to the queue
+            self.input_output_queue.append((inputs, outputs))
 
     def call_backward(self, no_sync=True):
         assert len(self.input_output_queue) > 0, 'No input/output is set.'
         # pop inputs/outputs from the queue
         inputs, outputs = self.input_output_queue.popleft()
+
+        if self.recompute:
+            outputs = self.stage_module(**inputs)
 
         out_tensors = tuple(outputs.values())
         grad_tensors = None
