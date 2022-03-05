@@ -114,12 +114,13 @@ class IntermediateStage(BertPreTrainedModel, StageModule, ModuleUtilsMixin):
 
 
 class EndingStage(BertPreTrainedModel, StageModule, ModuleUtilsMixin):
-    def __init__(self, config):
+    def __init__(self, config, loss_reduction='mean'):
         super().__init__(config)
         self.encoder = BertEncoder(config)
         self.pooler = BertPooler(config)
         self.cls = BertPreTrainingHeads(config)
         self.post_init()
+        self.loss_reduction = loss_reduction
 
     def forward(self, hidden_states, attention_mask, labels, next_sentence_label):
         extended_attention_mask = self.get_extended_attention_mask(attention_mask,
@@ -129,7 +130,7 @@ class EndingStage(BertPreTrainedModel, StageModule, ModuleUtilsMixin):
         sequence_output = encoder_outputs[0]
         pooled_output = self.pooler(sequence_output)
         prediction_scores, seq_relationship_score = self.cls(sequence_output, pooled_output)
-        loss_fct = CrossEntropyLoss()
+        loss_fct = CrossEntropyLoss(reduction=self.loss_reduction)
         masked_lm_loss = loss_fct(prediction_scores.view(-1, self.config.vocab_size), labels.view(-1))
         next_sentence_loss = loss_fct(seq_relationship_score.view(-1, 2), next_sentence_label.view(-1))
         total_loss = masked_lm_loss + next_sentence_loss
