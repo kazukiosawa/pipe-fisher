@@ -1,6 +1,6 @@
 import torch
 import torch.distributed as dist
-from comm_utils import init_dist_process_group
+from utils import init_dist_process_group
 
 local_rank, local_size, world_rank, world_size = init_dist_process_group(backend='nccl')
 assert local_size <= torch.cuda.device_count()
