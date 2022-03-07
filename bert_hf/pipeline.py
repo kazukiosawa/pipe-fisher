@@ -182,28 +182,28 @@ class PipelineStage:
         return self.backward_recv_queues[key].remove()
 
     def call_forward(self, input_source: OrderedDict[str, Tensor]):
-        no_grad_if_recompute = nullcontext if not self.recompute else torch.no_grad
+        if not self.is_first_stage:
+            inputs = collections.OrderedDict()
+            for key in self.keys_from_prev_stage:
+                inputs[key] = self.recv_inputs_from_queue(key)
+        else:
+            inputs = {}
+        for key in self.keys_from_source:
+            inputs[key] = input_source[key].to(self.device)
+        assert len(inputs) > 0, 'No input is set.'
 
+        no_grad_if_recompute = torch.no_grad if self.recompute else nullcontext
         with no_grad_if_recompute():
-            if not self.is_first_stage:
-                inputs = collections.OrderedDict()
-                for key in self.keys_from_prev_stage:
-                    inputs[key] = self.recv_inputs_from_queue(key)
-            else:
-                inputs = {}
-            for key in self.keys_from_source:
-                inputs[key] = input_source[key].to(self.device)
-            assert len(inputs) > 0, 'No input is set.'
-
             outputs = self.stage_module(**inputs)
-            if not self.is_last_stage:
-                for key in outputs:
-                    self.send_outputs_to_queue(key, outputs[key])
-            else:
-                self.total_loss += float(outputs['loss'])
 
-            # push inputs/outputs to the queue
-            self.input_output_queue.append((inputs, outputs))
+        if not self.is_last_stage:
+            for key in outputs:
+                self.send_outputs_to_queue(key, outputs[key])
+        else:
+            self.total_loss += float(outputs['loss'])
+
+        # push inputs/outputs to the queue
+        self.input_output_queue.append((inputs, outputs))
 
     def call_backward(self, no_sync=True):
         assert len(self.input_output_queue) > 0, 'No input/output is set.'
