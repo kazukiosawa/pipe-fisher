@@ -64,7 +64,8 @@ parser.add_argument('--checkpoint_dir', default=None, type=str,
                     help='path to directory to save checkpoints')
 parser.add_argument('--seed', type=int, default=1,
                     help="random seed for initialization")
-parser.add_argument('--dist_backend', default='nccl', type=str)
+parser.add_argument('--p2p_backend', default=dist.Backend.GLOO, type=str)
+parser.add_argument('--collective_backend', default=dist.Backend.NCCL, type=str)
 parser.add_argument('--num_workers', default=4, type=int)
 
 
@@ -83,11 +84,11 @@ def main():
         if args.checkpoint_dir is not None and is_stage_master:
             state = {
                 'epoch': epoch + 1,
-                'state_dict': stage_module.state_dict(),
-                'optimizer': optimizer.state_dict(),
+                'state_dict': stage.stage_module.state_dict(),
+                'optimizer': optimizers[0].state_dict(),
             }
             assert os.path.isdir(args.checkpoint_dir)
-            ckpt_file_path = os.path.join(args.checkpoint_dir, f'epoch{epoch+1}_stage{stage_id}.pt')
+            ckpt_file_path = os.path.join(args.checkpoint_dir, f'epoch{epoch+1}_stage{rank_to_stage(rank)}.pt')
             torch.save(state, ckpt_file_path)
             print(f'Saved checkpoint to {ckpt_file_path}')
 
@@ -96,34 +97,31 @@ def main():
 
 
 def train_one_epoch(epoch, step, num_steps_for_this_epoch):
-
-    if args.pipeline_method == PIPELINE_CHIMERA: 
-        stage.start_comm_threads(num_steps_for_this_epoch*num_micro_batches_per_step//2) 
+    if dual_pipelines:
+        stage.start_comm_threads(num_steps_for_this_epoch*num_micro_batches_per_step//2)
         stage.stage_module.train()
-        up_pipe_stage.start_comm_threads(num_steps_for_this_epoch*num_micro_batches_per_step//2) 
-        up_pipe_stage.stage_module.train()
+        stage.up_pipe_stage.start_comm_threads(num_steps_for_this_epoch*num_micro_batches_per_step//2)
+        stage.up_pipe_stage.stage_module.train()
     else:
-        stage.start_comm_threads(num_steps_for_this_epoch*num_micro_batches_per_step) 
+        stage.start_comm_threads(num_steps_for_this_epoch*num_micro_batches_per_step)
         stage.stage_module.train()
 
     train_iterator = iter(train_loader)
 
     for i in range(num_steps_for_this_epoch):
         dist.barrier()
-        optimizer.zero_grad()
-        if args.pipeline_method == PIPELINE_CHIMERA: 
-            up_pipe_optimizer.zero_grad()
+        for optimizer in optimizers:
+            optimizer.zero_grad()
 
         loss = stage.call_pipeline(train_iterator, num_micro_batches_per_step)
 
-        optimizer.step()
-        if args.pipeline_method == PIPELINE_CHIMERA: 
-            up_pipe_optimizer.step()
+        for optimizer in optimizers:
+            optimizer.step()
 
         loss = torch.tensor(loss, device=stage.device)
         dist.reduce(loss, dst=0)
         loss /= (num_replicas * num_micro_batches_per_step)
-        if args.pipeline_method == PIPELINE_CHIMERA:
+        if dual_pipelines:
             loss *= 2  # each pipeline handles half micro_batches
         if is_master:
             print(f'epoch{epoch+1} step{step+i+1} loss = {float(loss)}')
@@ -133,7 +131,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # Setup rank and device
-    local_rank, local_size, rank, world_size = init_dist_process_group(backend=args.dist_backend)
+    local_rank, local_size, rank, world_size = init_dist_process_group(backend=args.p2p_backend)
     assert local_size <= torch.cuda.device_count()
     torch.cuda.set_device(local_rank)
     device = torch.cuda.current_device()
@@ -152,74 +150,48 @@ if __name__ == "__main__":
     assert world_size % num_stages == 0
     num_ranks_per_stage = int(world_size / num_stages)
     num_replicas = num_ranks_per_stage
+    dual_pipelines = args.pipeline_method == PIPELINE_CHIMERA
+#    if dual_pipelines:
+#        num_replicas *= 2
 
-    config = BertConfig.from_json_file(args.bert_config_path)
-    tensor_shape = (args.micro_batch_size, args.max_seq_length, config.hidden_size)
-    up_pipe_stage = None
+    def rank_to_stage(_rank, down=True):
+        if down:
+            return _rank // num_ranks_per_stage
+        else:
+            return (world_size - 1 - _rank) // num_ranks_per_stage
 
-    up_pipe_stage_id = (world_size-1-rank) // num_ranks_per_stage
-    up_pipe_stage_to_ranks_map = {_stage_id: [] for _stage_id in range(num_stages)}
+    stage_to_ranks = {_stage_id: [] for _stage_id in range(num_stages)}
     for _rank in range(world_size):
-        _stage_id = (world_size-1-_rank) // num_ranks_per_stage
-        up_pipe_stage_to_ranks_map[_stage_id].append(_rank)
-
-    stage_id = rank // num_ranks_per_stage
-    stage_to_ranks_map = {_stage_id: [] for _stage_id in range(num_stages)}
-    for _rank in range(world_size):
-        _stage_id = _rank // num_ranks_per_stage
-        stage_to_ranks_map[_stage_id].append(_rank)
+        stage_to_ranks[rank_to_stage(_rank)].append(_rank)
+        if dual_pipelines:
+            stage_to_ranks[rank_to_stage(_rank, down=False)].append(_rank)
 
     grad_sync_groups = []
-    if args.pipeline_method == PIPELINE_CHIMERA: 
-        for _stage_id in range(num_stages):
-            grad_sync_groups.append(dist.new_group(ranks=up_pipe_stage_to_ranks_map[_stage_id] + stage_to_ranks_map[_stage_id], backend='nccl'))
-    else:
-        for _stage_id in range(num_stages):
-            grad_sync_groups.append(dist.new_group(ranks=stage_to_ranks_map[_stage_id], backend='nccl'))
+    for _stage_id in range(num_stages):
+        grad_sync_groups.append(dist.new_group(ranks=stage_to_ranks[_stage_id],
+                                               backend=args.collective_backend))
 
-    if args.pipeline_method == PIPELINE_CHIMERA: 
+    # Prepare BERT pipeline stages
+    config = BertConfig.from_json_file(args.bert_config_path)
 
-        # Prepare BERT up pipeline stage
-        up_pipe_stage_module = get_stage_bert_for_pretraining(up_pipe_stage_id, num_stages, config)
-        up_pipe_stage_module.to(device)
+    def get_pipeline_stage(down=True):
+        stage_id = rank_to_stage(rank, down=down)
+        stage_module = get_stage_bert_for_pretraining(stage_id, num_stages, config).to(device)
+        rank_interval = num_ranks_per_stage if down else -num_ranks_per_stage
+        return PipelineStage(stage_id=stage_id,
+                             num_stages=num_stages,
+                             stage_module=stage_module,
+                             num_batch_dims=2,  # batch_size, max_seq_length
+                             pipeline_method=args.pipeline_method,
+                             recompute=recompute,
+                             prev_rank=rank-rank_interval if stage_id > 0 else None,
+                             next_rank=rank+rank_interval if stage_id < num_stages-1 else None,
+                             grad_sync_group=grad_sync_groups[stage_id],
+                             is_up_pipe=not down,
+                             up_pipe_stage=get_pipeline_stage(down=False) if down and dual_pipelines else None)
 
-        up_pipe_stage = PipelineStage(stage_id=up_pipe_stage_id,
-                                      num_stages=args.num_stages,
-                                      input_tensor_shape=tensor_shape,
-                                      output_tensor_shape=tensor_shape,
-                                      stage_module=up_pipe_stage_module,
-                                      num_batch_dims=2,  # batch_size, max_seq_length
-                                      prev_rank=rank+num_ranks_per_stage if up_pipe_stage_id > 0 else None,
-                                      next_rank=rank-num_ranks_per_stage if up_pipe_stage_id < num_stages-1 else None,
-                                      grad_sync_group=grad_sync_groups[up_pipe_stage_id],
-                                      pipeline_method=args.pipeline_method,
-                                      recompute=args.recompute,
-                                      is_up_pipe=True,
-                                      up_pipe_stage=None)
-
+    stage = get_pipeline_stage()
     is_stage_master = rank % num_ranks_per_stage == 0
-
-    # Prepare BERT pipeline stage
-    stage_module = get_stage_bert_for_pretraining(stage_id, num_stages, config)
-    stage_module.to(device)
-
-    stage = PipelineStage(stage_id=stage_id,
-                          num_stages=num_stages,
-                          input_tensor_shape=tensor_shape,
-                          output_tensor_shape=tensor_shape,
-                          stage_module=stage_module,
-                          num_batch_dims=2,  # batch_size, max_seq_length
-                          prev_rank=rank-num_ranks_per_stage if stage_id > 0 else None,
-                          next_rank=rank+num_ranks_per_stage if stage_id < num_stages-1 else None,
-                          grad_sync_group=grad_sync_groups[stage_id],
-                          pipeline_method=args.pipeline_method,
-                          recompute=args.recompute,
-                          is_up_pipe=False,
-                          up_pipe_stage=up_pipe_stage)
-
-    stage.init_comm_queues()
-    if args.pipeline_method == PIPELINE_CHIMERA: 
-        up_pipe_stage.init_comm_queues()
 
     # Prepare BERT dataset
     tokenizer = BertTokenizer(args.vocab_path, do_lower_case=args.do_lower_case)
@@ -254,35 +226,24 @@ if __name__ == "__main__":
         num_epochs = math.ceil(num_samples / len(train_dataset))
 
     # Prepare optimizers.
-    optimizers = []
-    decay_param_group = {'params': [], 'weight_decay': args.weight_decay}
-    no_decay_param_group = {'params': [], 'weight_decay': 0.}
-    for module in stage_module.modules():
-        if isinstance(module, nn.LayerNorm):
-            no_decay_param_group['params'].extend(list(module.parameters()))
-        elif isinstance(module, (nn.Linear, nn.Embedding)):
-            if hasattr(module, 'bias') and module.bias is not None:
-                no_decay_param_group['params'].append(module.bias)
-            decay_param_group['params'].append(module.weight)
-    optimizer = BertAdam([decay_param_group, no_decay_param_group],
-                         lr=args.learning_rate,
-                         warmup=args.warmup_proportion,
-                         t_total=num_steps)
-
-    if args.pipeline_method == PIPELINE_CHIMERA: 
+    def get_optimizer(module):
         decay_param_group = {'params': [], 'weight_decay': args.weight_decay}
         no_decay_param_group = {'params': [], 'weight_decay': 0.}
-        for module in up_pipe_stage_module.modules():
-            if isinstance(module, nn.LayerNorm):
-                no_decay_param_group['params'].extend(list(module.parameters()))
-            elif isinstance(module, (nn.Linear, nn.Embedding)):
-                if hasattr(module, 'bias') and module.bias is not None:
-                    no_decay_param_group['params'].append(module.bias)
-                decay_param_group['params'].append(module.weight)
-        up_pipe_optimizer = BertAdam([decay_param_group, no_decay_param_group],
-                                     lr=args.learning_rate,
-                                     warmup=args.warmup_proportion,
-                                     t_total=num_steps)
+        for m in module.modules():
+            if isinstance(m, nn.LayerNorm):
+                no_decay_param_group['params'].extend(list(m.parameters()))
+            elif isinstance(m, (nn.Linear, nn.Embedding)):
+                if hasattr(m, 'bias') and m.bias is not None:
+                    no_decay_param_group['params'].append(m.bias)
+                decay_param_group['params'].append(m.weight)
+        return BertAdam([decay_param_group, no_decay_param_group],
+                        lr=args.learning_rate,
+                        warmup=args.warmup_proportion,
+                        t_total=num_steps)
+
+    optimizers = [get_optimizer(stage.stage_module)]
+    if dual_pipelines:
+        optimizers.append(get_optimizer(stage.up_pipe_stage.stage_module))
 
     dist.barrier()
     if is_master:
@@ -296,7 +257,7 @@ if __name__ == "__main__":
         print(f'num_micro_batches_per_step: {num_micro_batches_per_step}')
         print(f'num_ranks_per_stage: {num_ranks_per_stage}')
         for _stage_id in range(num_stages):
-            print(f'stage{_stage_id}: ranks {stage_to_ranks_map[_stage_id]}')
+            print(f'stage{_stage_id}: ranks {stage_to_ranks[_stage_id]}')
         print('----------------------------')
         for key, value in vars(args).items():
             print(f'{key}: {value}')

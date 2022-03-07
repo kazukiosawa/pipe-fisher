@@ -1,6 +1,6 @@
 import collections
 from collections import deque
-from typing import List, Tuple, Deque, OrderedDict, Iterator, Union
+from typing import List, Tuple, Deque, OrderedDict, Iterator, Union, Dict, Callable
 from contextlib import nullcontext
 
 import torch
@@ -25,7 +25,11 @@ class StageModule(nn.Module):
         raise NotImplementedError
 
     @property
-    def keys_and_sizes_from_prev_stage(self) -> List[Tuple[str, tuple]]:
+    def sizes_from_prev_stage(self) -> Dict[str, Tuple]:
+        raise NotImplementedError
+
+    @property
+    def sizes_for_next_stage(self) -> Dict[str, Tuple]:
         raise NotImplementedError
 
 
@@ -43,8 +47,8 @@ def send_comm_thread(num_iterations, queue, dst_rank, tag):
         dist.send(tensor=send_tensor, dst=dst_rank, tag=tag)
 
 
-def start_comm_thread(func, func_args):
-    comm_thread = threading.Thread(target=func, args=func_args)
+def start_comm_thread(func, kwargs):
+    comm_thread = threading.Thread(target=func, kwargs=kwargs)
     comm_thread.daemon = True
     comm_thread.start()
 
@@ -53,8 +57,6 @@ class PipelineStage:
     def __init__(self,
                  stage_id: int,
                  num_stages: int,
-                 input_tensor_shape: tuple,
-                 output_tensor_shape: tuple,
                  stage_module: Union[StageModule, DistributedDataParallel],
                  num_batch_dims: int = 1,
                  prev_rank: int = None,
@@ -69,8 +71,6 @@ class PipelineStage:
         assert stage_id in range(num_stages), 'stage_id has be in range(num_stage).'
         self.stage_id = stage_id
         self.num_stages = num_stages
-        self.input_tensor_shape = input_tensor_shape
-        self.output_tensor_shape = output_tensor_shape
         self.stage_module = stage_module
         self.num_batch_dims = num_batch_dims
         self.input_output_queue: Deque[Tuple[OrderedDict[str, Tensor], OrderedDict[str, Tensor]]] = deque()
@@ -96,6 +96,8 @@ class PipelineStage:
         self.grads = []
         self.packed_grads = []
 
+        self.init_comm_queues()
+
     @property
     def is_first_stage(self):
         return self.stage_id == 0
@@ -111,62 +113,60 @@ class PipelineStage:
         return self.stage_module.keys_from_source
 
     @property
-    def keys_and_sizes_from_prev_stage(self):
+    def sizes_from_prev_stage(self) -> Dict[str, Tuple]:
         stage_module = self.stage_module
         if isinstance(stage_module, DistributedDataParallel):
             stage_module = stage_module.module
-        return stage_module.keys_and_sizes_from_prev_stage
+        return stage_module.sizes_from_prev_stage
 
     @property
-    def keys_from_prev_stage(self):
-        return [v[0] for v in self.keys_and_sizes_from_prev_stage]
+    def keys_from_prev_stage(self) -> List[str]:
+        return list(self.sizes_from_prev_stage.keys())
 
     @property
-    def keys_and_sizes_of_next_stage(self):
+    def sizes_for_next_stage(self) -> Dict[str, Tuple]:
         stage_module = self.stage_module
         if isinstance(stage_module, DistributedDataParallel):
             stage_module = stage_module.module
-        return stage_module.keys_and_sizes_of_next_stage
+        return stage_module.sizes_for_next_stage
 
     @property
-    def keys_of_next_stage(self):
-        return [v[0] for v in self.keys_and_sizes_of_next_stage]
+    def keys_for_next_stage(self):
+        return list(self.sizes_for_next_stage.keys())
 
     def init_comm_queues(self):
-        if self.is_first_stage:
-            for key in self.keys_of_next_stage:
+        if not self.is_last_stage:
+            for key in self.keys_for_next_stage:
                 self.backward_recv_queues[key] = threadsafe_queue.Queue()
                 self.forward_send_queues[key] = threadsafe_queue.Queue()
-        elif self.is_last_stage:
-            for key in self.keys_from_prev_stage:
-                self.forward_recv_queues[key] = threadsafe_queue.Queue()
-                self.backward_send_queues[key] = threadsafe_queue.Queue()
-        else:
-            for key in self.keys_of_next_stage:
-                self.backward_recv_queues[key] = threadsafe_queue.Queue()
-                self.forward_send_queues[key] = threadsafe_queue.Queue()
+        if not self.is_first_stage:
             for key in self.keys_from_prev_stage:
                 self.forward_recv_queues[key] = threadsafe_queue.Queue()
                 self.backward_send_queues[key] = threadsafe_queue.Queue()
 
     def start_comm_threads(self, num_iterations):
-        for key in self.forward_recv_queues:
-            queue = self.forward_recv_queues[key]
-            start_comm_thread(recv_comm_thread,
-                              (num_iterations, queue, self.prev_rank, self.tag, self.input_tensor_shape, self.device))
+        def start_recv_threads(recv_queues, src_rank, tensor_shapes):
+            for key, queue in recv_queues.items():
+                start_comm_thread(recv_comm_thread,
+                                  dict(num_iterations=num_iterations,
+                                       queue=queue,
+                                       src_rank=src_rank,
+                                       tag=self.tag,
+                                       tensor_shape=tensor_shapes[key],
+                                       device=self.device))
 
-        for key in self.forward_send_queues:
-            queue = self.forward_send_queues[key]
-            start_comm_thread(send_comm_thread, (num_iterations, queue, self.next_rank, self.tag))
+        def start_send_threads(queues, dst_rank):
+            for queue in queues.values():
+                start_comm_thread(send_comm_thread,
+                                  dict(num_iterations=num_iterations,
+                                       queue=queue,
+                                       dst_rank=dst_rank,
+                                       tag=self.tag))
 
-        for key in self.backward_recv_queues:
-            queue = self.backward_recv_queues[key]
-            start_comm_thread(recv_comm_thread,
-                              (num_iterations, queue, self.next_rank, self.tag, self.output_tensor_shape, self.device))
-
-        for key in self.backward_send_queues:
-            queue = self.backward_send_queues[key]
-            start_comm_thread(send_comm_thread, (num_iterations, queue, self.prev_rank, self.tag))
+        start_recv_threads(self.forward_recv_queues, self.prev_rank, self.sizes_from_prev_stage)
+        start_send_threads(self.forward_send_queues, self.next_rank)
+        start_recv_threads(self.backward_recv_queues, self.next_rank, self.sizes_for_next_stage)
+        start_send_threads(self.backward_send_queues, self.prev_rank)
 
     def send_outputs_to_queue(self, key, tensor):
         self.forward_send_queues[key].add(tensor)
@@ -181,7 +181,7 @@ class PipelineStage:
         return self.backward_recv_queues[key].remove()
 
     def call_forward(self, input_source: OrderedDict[str, Tensor]):
-        no_grad_if_recompute = nullcontext() if not self.recompute else torch.no_grad
+        no_grad_if_recompute = nullcontext if not self.recompute else torch.no_grad
 
         with no_grad_if_recompute():
             if not self.is_first_stage:
@@ -244,33 +244,6 @@ class PipelineStage:
         if isinstance(self.stage_module, DistributedDataParallel) and no_sync:
             return self.stage_module.no_sync()
         return nullcontext()
-
-    def _get_zero_inputs(self, input_source: OrderedDict[str, Tensor]):
-        batch_size = tuple(next(iter(input_source.values())).shape[:self.num_batch_dims])
-        inputs = collections.OrderedDict()
-        for key, size in self.keys_and_sizes_from_prev_stage:
-            inputs[key] = torch.zeros(batch_size + size, device=self.device, requires_grad=True)
-        return inputs
-
-    def _receive_inputs(self, inputs: OrderedDict[str, Tensor]):
-        assert self.prev_rank is not None, 'prev_rank is not specified.'
-        for key in self.keys_from_prev_stage:
-            dist.recv(inputs[key], src=self.prev_rank)
-
-    def _send_outputs(self, outputs: OrderedDict[str, Tensor]):
-        assert self.next_rank is not None, 'next_rank is not specified.'
-        for key in outputs:
-            dist.send(outputs[key], dst=self.next_rank)
-
-    def _receive_output_grads(self, outputs: OrderedDict[str, Tensor]):
-        assert self.next_rank is not None, 'next_rank is not specified.'
-        for key in outputs:
-            dist.recv(outputs[key].grad, src=self.next_rank)
-
-    def _send_input_grads(self, inputs: OrderedDict[str, Tensor]):
-        assert self.prev_rank is not None, 'prev_rank is not specified.'
-        for key in self.keys_from_prev_stage:
-            dist.send(inputs[key].grad, dst=self.prev_rank)
 
     def sync_grad(self):
         assert self.grad_sync_group is not None, 'grad_sync_group is not specified.'

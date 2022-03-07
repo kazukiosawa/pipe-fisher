@@ -75,12 +75,12 @@ class StartingStage(BertModel, StageModule):
         return ['input_ids', 'attention_mask', 'token_type_ids']
 
     @property
-    def keys_and_sizes_from_prev_stage(self):
-        return []
+    def sizes_from_prev_stage(self):
+        return {}
 
     @property
-    def keys_and_sizes_of_next_stage(self):
-        return [('hidden_states', (self.config.hidden_size,))]
+    def sizes_for_next_stage(self):
+        return {'hidden_states': self.config.hidden_size}
 
 
 class IntermediateStage(BertPreTrainedModel, StageModule, ModuleUtilsMixin):
@@ -105,12 +105,12 @@ class IntermediateStage(BertPreTrainedModel, StageModule, ModuleUtilsMixin):
         return ['attention_mask']
 
     @property
-    def keys_and_sizes_from_prev_stage(self):
-        return [('hidden_states', (self.config.hidden_size,))]
+    def sizes_from_prev_stage(self):
+        return {'hidden_states': self.config.hidden_size}
 
     @property
-    def keys_and_sizes_of_next_stage(self):
-        return [('hidden_states', (self.config.hidden_size,))]
+    def sizes_for_next_stage(self):
+        return {'hidden_states': self.config.hidden_size}
 
 
 class EndingStage(BertPreTrainedModel, StageModule, ModuleUtilsMixin):
@@ -141,9 +141,9 @@ class EndingStage(BertPreTrainedModel, StageModule, ModuleUtilsMixin):
         return ['attention_mask', 'labels', 'next_sentence_label']
 
     @property
-    def keys_and_sizes_from_prev_stage(self):
-        return [('hidden_states', (self.config.hidden_size,))]
+    def sizes_from_prev_stage(self):
+        return {'hidden_states': self.config.hidden_size}
 
     @property
-    def keys_and_sizes_of_next_stage(self):
-        return []
+    def sizes_for_next_stage(self):
+        return {}
