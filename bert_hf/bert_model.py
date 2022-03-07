@@ -80,7 +80,7 @@ class StartingStage(BertModel, StageModule):
 
     @property
     def sizes_for_next_stage(self):
-        return {'hidden_states': self.config.hidden_size}
+        return {'hidden_states': (self.config.hidden_size,)}
 
 
 class IntermediateStage(BertPreTrainedModel, StageModule, ModuleUtilsMixin):
@@ -106,11 +106,11 @@ class IntermediateStage(BertPreTrainedModel, StageModule, ModuleUtilsMixin):
 
     @property
     def sizes_from_prev_stage(self):
-        return {'hidden_states': self.config.hidden_size}
+        return {'hidden_states': (self.config.hidden_size,)}
 
     @property
     def sizes_for_next_stage(self):
-        return {'hidden_states': self.config.hidden_size}
+        return {'hidden_states': (self.config.hidden_size,)}
 
 
 class EndingStage(BertPreTrainedModel, StageModule, ModuleUtilsMixin):
@@ -142,7 +142,7 @@ class EndingStage(BertPreTrainedModel, StageModule, ModuleUtilsMixin):
 
     @property
     def sizes_from_prev_stage(self):
-        return {'hidden_states': self.config.hidden_size}
+        return {'hidden_states': (self.config.hidden_size,)}
 
     @property
     def sizes_for_next_stage(self):
