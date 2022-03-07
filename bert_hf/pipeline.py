@@ -43,6 +43,12 @@ def send_comm_thread(num_iterations, queue, dst_rank, tag):
         dist.send(tensor=send_tensor, dst=dst_rank, tag=tag)
 
 
+def start_comm_thread(func, func_args):
+    comm_thread = threading.Thread(target=func, args=func_args)
+    comm_thread.daemon = True
+    comm_thread.start()
+
+
 class PipelineStage:
     def __init__(self,
                  stage_id: int,
@@ -141,29 +147,24 @@ class PipelineStage:
                 self.forward_recv_queues[key] = threadsafe_queue.Queue()
                 self.backward_send_queues[key] = threadsafe_queue.Queue()
 
-    def start_comm_thread(self, func, func_args):
-        comm_thread = threading.Thread(target=func, args=func_args)
-        comm_thread.daemon = True
-        comm_thread.start()
-
     def start_comm_threads(self, num_iterations):
         for key in self.forward_recv_queues:
             queue = self.forward_recv_queues[key]
-            self.start_comm_thread(recv_comm_thread,
-                                   (num_iterations, queue, self.prev_rank, self.tag, self.input_tensor_shape, self.device))
+            start_comm_thread(recv_comm_thread,
+                              (num_iterations, queue, self.prev_rank, self.tag, self.input_tensor_shape, self.device))
 
         for key in self.forward_send_queues:
             queue = self.forward_send_queues[key]
-            self.start_comm_thread(send_comm_thread, (num_iterations, queue, self.next_rank, self.tag))
+            start_comm_thread(send_comm_thread, (num_iterations, queue, self.next_rank, self.tag))
 
         for key in self.backward_recv_queues:
             queue = self.backward_recv_queues[key]
-            self.start_comm_thread(recv_comm_thread,
-                                   (num_iterations, queue, self.next_rank, self.tag, self.output_tensor_shape, self.device))
+            start_comm_thread(recv_comm_thread,
+                              (num_iterations, queue, self.next_rank, self.tag, self.output_tensor_shape, self.device))
 
         for key in self.backward_send_queues:
             queue = self.backward_send_queues[key]
-            self.start_comm_thread(send_comm_thread, (num_iterations, queue, self.prev_rank, self.tag))
+            start_comm_thread(send_comm_thread, (num_iterations, queue, self.prev_rank, self.tag))
 
     def send_outputs_to_queue(self, key, tensor):
         self.forward_send_queues[key].add(tensor)
