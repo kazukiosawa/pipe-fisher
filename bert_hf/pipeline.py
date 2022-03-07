@@ -144,7 +144,7 @@ class PipelineStage:
                 self.forward_recv_queues[key] = threadsafe_queue.Queue()
                 self.backward_send_queues[key] = threadsafe_queue.Queue()
 
-    def start_comm_threads(self, num_iterations):
+    def start_comm_threads(self, num_iterations, batch_sizes):
         def start_recv_threads(recv_queues, src_rank, tensor_shapes):
             for key, queue in recv_queues.items():
                 start_comm_thread(recv_comm_thread,
@@ -152,7 +152,7 @@ class PipelineStage:
                                        queue=queue,
                                        src_rank=src_rank,
                                        tag=self.tag,
-                                       tensor_shape=tensor_shapes[key],
+                                       tensor_shape=batch_sizes + tensor_shapes[key],
                                        device=self.device))
 
         def start_send_threads(queues, dst_rank):
