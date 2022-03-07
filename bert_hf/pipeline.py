@@ -347,9 +347,7 @@ class PipelineStage:
         assert num_micro_batches % self.num_stages == 0, 'Num_micro_batches should be a multiple of num_stages.'
         acc_steps = num_micro_batches // self.num_stages        
         half_stages = self.num_stages // 2
-        first_half = False
-        if self.stage_id // half_stages == 0:
-            first_half = True
+        first_half = self.stage_id // half_stages == 0
 
         schedule_number_a = half_stages - self.stage_id
         if schedule_number_a <= 0:
