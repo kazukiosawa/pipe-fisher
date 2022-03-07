@@ -30,14 +30,14 @@ class StageModule(nn.Module):
 
 
 def recv_comm_thread(num_iterations, queue, src_rank, tag, tensor_shape, device):
-    for i in range(num_iterations):
+    for _ in range(num_iterations):
         recv_tensor = torch.zeros(tensor_shape, requires_grad=True)
         dist.recv(tensor=recv_tensor, src=src_rank, tag=tag)
         queue.add(recv_tensor.to(device))
 
 
 def send_comm_thread(num_iterations, queue, dst_rank, tag):
-    for i in range(num_iterations):
+    for _ in range(num_iterations):
         send_tensor = queue.remove()
         send_tensor = send_tensor.cpu()
         dist.send(tensor=send_tensor, dst=dst_rank, tag=tag)
