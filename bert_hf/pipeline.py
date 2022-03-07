@@ -181,9 +181,9 @@ class PipelineStage:
         return self.backward_recv_queues[key].remove()
 
     def call_forward(self, input_source: OrderedDict[str, Tensor]):
-        no_grad_if_need = nullcontext() if not self.recompute else torch.no_grad
+        no_grad_if_recompute = nullcontext() if not self.recompute else torch.no_grad
 
-        with no_grad_if_need():
+        with no_grad_if_recompute():
             if not self.is_first_stage:
                 inputs = collections.OrderedDict()
                 for key in self.keys_from_prev_stage:
