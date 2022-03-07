@@ -77,7 +77,7 @@ def main():
             train_loader.sampler.set_epoch(epoch)
 
         steps_for_this_epoch = min(num_steps - total_steps, max_steps_per_epoch)
-        train_one_epoch(epoch, total_steps, steps_for_this_epoch, num_micro_batches_per_step)
+        train_one_epoch(epoch, total_steps, steps_for_this_epoch)
         total_steps += steps_for_this_epoch
 
         if args.checkpoint_dir is not None and is_stage_master:
@@ -95,7 +95,7 @@ def main():
         print('Finished.')
 
 
-def train_one_epoch(epoch, step, num_steps_for_this_epoch, num_micro_batches_per_step):
+def train_one_epoch(epoch, step, num_steps_for_this_epoch):
 
     if args.pipeline_method == PIPELINE_CHIMERA: 
         stage.start_comm_threads(num_steps_for_this_epoch*num_micro_batches_per_step//2) 
@@ -254,7 +254,8 @@ if __name__ == "__main__":
         num_samples = num_steps * num_samples_per_step
         num_epochs = math.ceil(num_samples / len(train_dataset))
 
-    # Prepare optimizer.
+    # Prepare optimizers.
+    optimizers = []
     decay_param_group = {'params': [], 'weight_decay': args.weight_decay}
     no_decay_param_group = {'params': [], 'weight_decay': 0.}
     for module in stage_module.modules():
