@@ -10,7 +10,6 @@ from torch import nn
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 import torch.distributed as dist
-from torch.nn.parallel import DistributedDataParallel
 
 from transformers import BertTokenizer, BertConfig
 
