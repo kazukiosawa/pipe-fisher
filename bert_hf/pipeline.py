@@ -28,12 +28,13 @@ class StageModule(nn.Module):
     def keys_and_sizes_from_prev_stage(self) -> List[Tuple[str, tuple]]:
         raise NotImplementedError
 
+
 def recv_comm_thread(num_iterations, queue, src_rank, tag, tensor_shape, device):
     for i in range(num_iterations):
-        #recv_tensor = torch.zeros(tensor_shape, device=device, requires_grad=True)
         recv_tensor = torch.zeros(tensor_shape, requires_grad=True)
         dist.recv(tensor=recv_tensor, src=src_rank, tag=tag)
         queue.add(recv_tensor.cuda())
+
 
 def send_comm_thread(num_iterations, queue, dst_rank, tag):
     for i in range(num_iterations):
@@ -41,6 +42,7 @@ def send_comm_thread(num_iterations, queue, dst_rank, tag):
 
         send_tensor = send_tensor.cpu()
         dist.send(tensor=send_tensor, dst=dst_rank, tag=tag)
+
 
 class PipelineStage:
     def __init__(self,
