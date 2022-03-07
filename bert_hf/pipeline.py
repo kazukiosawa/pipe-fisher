@@ -2,7 +2,6 @@ import collections
 from collections import deque
 from typing import List, Tuple, Deque, OrderedDict, Iterator, Union
 from contextlib import nullcontext
-from contextlib import contextmanager
 
 import torch
 from torch import Tensor
@@ -124,13 +123,6 @@ class PipelineStage:
     def keys_of_next_stage(self):
         return [v[0] for v in self.keys_and_sizes_of_next_stage]
 
-    @contextmanager
-    def dummy_handler(self):
-        try:
-            yield
-        finally:
-            pass
-
     def init_comm_queues(self):
         if self.is_first_stage:
             for key in self.keys_of_next_stage:
@@ -185,9 +177,9 @@ class PipelineStage:
         return self.backward_recv_queues[key].remove()
 
     def call_forward(self, input_source: OrderedDict[str, Tensor]):
-        no_grad_context_handler = self.dummy_handler if not self.recompute else torch.no_grad
+        no_grad_if_need = nullcontext() if not self.recompute else torch.no_grad
 
-        with no_grad_context_handler():
+        with no_grad_if_need():
             if not self.is_first_stage:
                 inputs = collections.OrderedDict()
                 for key in self.keys_from_prev_stage:
