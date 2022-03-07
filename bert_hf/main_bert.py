@@ -120,14 +120,13 @@ def train_one_epoch(epoch, step, num_steps_for_this_epoch):
         if args.pipeline_method == PIPELINE_CHIMERA: 
             up_pipe_optimizer.step()
 
-        tensor = torch.tensor(loss, device=stage.device)
-        dist.reduce(tensor, dst=0)
-        if args.pipeline_method == PIPELINE_CHIMERA: 
-            tensor /= (num_replicas * num_micro_batches_per_step / 2) # each pipeline handles half micro_batches
-        else:
-            tensor /= (num_replicas * num_micro_batches_per_step)
+        loss = torch.tensor(loss, device=stage.device)
+        dist.reduce(loss, dst=0)
+        loss /= (num_replicas * num_micro_batches_per_step)
+        if args.pipeline_method == PIPELINE_CHIMERA:
+            loss *= 2  # each pipeline handles half micro_batches
         if is_master:
-            print(f'epoch{epoch+1} step{step+i+1} loss = {float(tensor)}')
+            print(f'epoch{epoch+1} step{step+i+1} loss = {float(loss)}')
 
 
 if __name__ == "__main__":
