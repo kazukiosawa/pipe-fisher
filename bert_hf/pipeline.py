@@ -421,7 +421,7 @@ class PipelineStage:
         if self.up_pipe_stage.stage_id > half_stages:
             self.nb_sync_grad()
 
-        if first_half == True:
+        if first_half:
             self.up_pipe_stage.waitall()
             self.waitall()
         else:
