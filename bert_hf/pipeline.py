@@ -2,6 +2,7 @@ import collections
 from collections import deque
 from typing import List, Tuple, Deque, OrderedDict, Iterator, Union
 from contextlib import nullcontext
+from contextlib import contextmanager
 
 import torch
 from torch import Tensor
@@ -54,6 +55,7 @@ class PipelineStage:
                  next_rank: int = None,
                  grad_sync_group: dist.ProcessGroup = None,
                  pipeline_method: str = None,
+                 recompute: bool = False,
                  is_up_pipe: bool = False,
                  up_pipe_stage = None):
         assert dist.is_initialized(), 'torch.distributed needs to be initialized.'
@@ -72,6 +74,7 @@ class PipelineStage:
         self.device = next(stage_module.parameters()).device
         self.total_loss = 0.
         self.pipeline_method = pipeline_method
+        self.recompute = recompute
         self.is_up_pipe = is_up_pipe
         if not self.is_up_pipe and self.pipeline_method == PIPELINE_CHIMERA:
             assert up_pipe_stage is not None, 'Up pipeline should be created.'
@@ -82,6 +85,10 @@ class PipelineStage:
         self.backward_recv_queues = {}
         self.forward_send_queues = {}
         self.backward_send_queues = {}
+
+        self.handles = []
+        self.grads = []
+        self.packed_grads = []
 
     @property
     def is_first_stage(self):
@@ -116,6 +123,13 @@ class PipelineStage:
     @property
     def keys_of_next_stage(self):
         return [v[0] for v in self.keys_and_sizes_of_next_stage]
+
+    @contextmanager
+    def dummy_handler(self):
+        try:
+            yield
+        finally:
+            pass
 
     def init_comm_queues(self):
         if self.is_first_stage:
@@ -171,30 +185,36 @@ class PipelineStage:
         return self.backward_recv_queues[key].remove()
 
     def call_forward(self, input_source: OrderedDict[str, Tensor]):
-        if not self.is_first_stage:
-            inputs = collections.OrderedDict()
-            for key in self.keys_from_prev_stage:
-                inputs[key] = self.recv_inputs_from_queue(key)
-        else:
-            inputs = {}
-        for key in self.keys_from_source:
-            inputs[key] = input_source[key].to(self.device)
-        assert len(inputs) > 0, 'No input is set.'
+        no_grad_context_handler = self.dummy_handler if not self.recompute else torch.no_grad
 
-        outputs = self.stage_module(**inputs)
-        if not self.is_last_stage:
-            for key in outputs:
-                self.send_outputs_to_queue(key, outputs[key])
-        else:
-            self.total_loss += float(outputs['loss'])
+        with no_grad_context_handler():
+            if not self.is_first_stage:
+                inputs = collections.OrderedDict()
+                for key in self.keys_from_prev_stage:
+                    inputs[key] = self.recv_inputs_from_queue(key)
+            else:
+                inputs = {}
+            for key in self.keys_from_source:
+                inputs[key] = input_source[key].to(self.device)
+            assert len(inputs) > 0, 'No input is set.'
 
-        # push inputs/outputs to the queue
-        self.input_output_queue.append((inputs, outputs))
+            outputs = self.stage_module(**inputs)
+            if not self.is_last_stage:
+                for key in outputs:
+                    self.send_outputs_to_queue(key, outputs[key])
+            else:
+                self.total_loss += float(outputs['loss'])
+
+            # push inputs/outputs to the queue
+            self.input_output_queue.append((inputs, outputs))
 
     def call_backward(self, no_sync=True):
         assert len(self.input_output_queue) > 0, 'No input/output is set.'
         # pop inputs/outputs from the queue
         inputs, outputs = self.input_output_queue.popleft()
+
+        if self.recompute:
+            outputs = self.stage_module(**inputs)
 
         out_tensors = tuple(outputs.values())
         grad_tensors = None
@@ -264,6 +284,22 @@ class PipelineStage:
         dist.all_reduce(packed_tensor, group=self.grad_sync_group)
         packed_tensor /= self.grad_sync_group.size()
         vector_to_parameters(packed_tensor, grads)
+
+    def nb_sync_grad(self):
+        assert self.grad_sync_group is not None, 'grad_sync_group is not specified.'
+        dist.barrier(group=self.grad_sync_group)
+        grads = [p.grad for p in self.stage_module.parameters() if p.grad is not None]
+        self.grads.append(grads)
+        packed_tensor = parameters_to_vector(self.grads[-1])
+        self.packed_grads.append(packed_tensor)
+        self.handles.append(dist.all_reduce(self.packed_grads[-1], group=self.grad_sync_group, async_op=True))
+
+    def waitall(self):
+        l = len(self.handles)
+        for _ in range(l):
+            self.handles.pop(0).wait()
+            packed_tensor = self.packed_grads.pop(0) / self.grad_sync_group.size()
+            vector_to_parameters(packed_tensor, self.grads.pop(0))
 
     def call_pipeline(self, data_iterator: Iterator, num_micro_batches, pipeline_method=None):
         if pipeline_method is None:
@@ -371,9 +407,9 @@ class PipelineStage:
             # early invoke grad_sync
             if acc_step == acc_steps - 1:
                 if self.stage_id > half_stages:
-                    self.sync_grad()
+                    self.nb_sync_grad()
                 if self.up_pipe_stage.stage_id > half_stages:
-                    self.up_pipe_stage.sync_grad()
+                    self.up_pipe_stage.nb_sync_grad()
 
         for step in range(schedule_number_a):
             if first_half:
@@ -382,13 +418,20 @@ class PipelineStage:
                 self.up_pipe_stage.call_backward()
 
         if self.stage_id == half_stages:
-            self.sync_grad()
-            self.up_pipe_stage.sync_grad()
+            self.nb_sync_grad()
+            self.up_pipe_stage.nb_sync_grad()
         if self.up_pipe_stage.stage_id == half_stages:
-            self.up_pipe_stage.sync_grad()
-            self.sync_grad()
+            self.up_pipe_stage.nb_sync_grad()
+            self.nb_sync_grad()
 
         if self.stage_id > half_stages:
-            self.up_pipe_stage.sync_grad()
+            self.up_pipe_stage.nb_sync_grad()
         if self.up_pipe_stage.stage_id > half_stages:
-            self.sync_grad()
+            self.nb_sync_grad()
+
+        if first_half == True:
+            self.up_pipe_stage.waitall()
+            self.waitall()
+        else:
+            self.waitall()
+            self.up_pipe_stage.waitall()

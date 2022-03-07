@@ -56,6 +56,8 @@ parser.add_argument("--warmup_proportion", default=0.1, type=float,
                     help="Proportion of training to perform linear learning rate warmup for.")
 # Pipeline
 parser.add_argument('--pipeline_method', choices=[PIPELINE_1F1B, PIPELINE_GPIPE, PIPELINE_CHIMERA], default=PIPELINE_1F1B)
+parser.add_argument('--recompute', action='store_true',
+                    help='Recompute activations in backward pass')
 parser.add_argument('--num_stages', type=int, default=4,
                     help='number of stages in configurable BERT model')
 # Others
@@ -148,10 +150,10 @@ if __name__ == "__main__":
     torch.cuda.manual_seed(args.seed)
 
     num_stages = args.num_stages
+    recompute = args.recompute
     assert world_size % num_stages == 0
     num_ranks_per_stage = int(world_size / num_stages)
     num_replicas = num_ranks_per_stage
-    sync_group_size = num_replicas*2 if args.pipeline_method == PIPELINE_CHIMERA else num_replicas
 
     config = BertConfig.from_json_file(args.bert_config_path)
     tensor_shape = (args.micro_batch_size, args.max_seq_length, config.hidden_size)
@@ -172,10 +174,10 @@ if __name__ == "__main__":
     grad_sync_groups = []
     if args.pipeline_method == PIPELINE_CHIMERA: 
         for _stage_id in range(num_stages):
-            grad_sync_groups.append(dist.new_group(up_pipe_stage_to_ranks_map[_stage_id] + stage_to_ranks_map[_stage_id]))
+            grad_sync_groups.append(dist.new_group(ranks=up_pipe_stage_to_ranks_map[_stage_id] + stage_to_ranks_map[_stage_id], backend='nccl'))
     else:
         for _stage_id in range(num_stages):
-            grad_sync_groups.append(dist.new_group(stage_to_ranks_map[_stage_id]))
+            grad_sync_groups.append(dist.new_group(ranks=stage_to_ranks_map[_stage_id], backend='nccl'))
 
     if args.pipeline_method == PIPELINE_CHIMERA: 
 
@@ -193,6 +195,7 @@ if __name__ == "__main__":
                                       next_rank=rank-num_ranks_per_stage if up_pipe_stage_id < num_stages-1 else None,
                                       grad_sync_group=grad_sync_groups[up_pipe_stage_id],
                                       pipeline_method=args.pipeline_method,
+                                      recompute=args.recompute,
                                       is_up_pipe=True,
                                       up_pipe_stage=None)
 
@@ -212,6 +215,7 @@ if __name__ == "__main__":
                           next_rank=rank+num_ranks_per_stage if stage_id < num_stages-1 else None,
                           grad_sync_group=grad_sync_groups[stage_id],
                           pipeline_method=args.pipeline_method,
+                          recompute=args.recompute,
                           is_up_pipe=False,
                           up_pipe_stage=up_pipe_stage)
 
@@ -289,6 +293,7 @@ if __name__ == "__main__":
         print(f'num_replica: {num_replicas}')
         print(f'num_epochs: {num_epochs}')
         print(f'num_optimization_steps: {num_steps}')
+        print(f'recompute: {recompute}')
         print(f'num_micro_batches_per_step: {num_micro_batches_per_step}')
         print(f'num_ranks_per_stage: {num_ranks_per_stage}')
         for _stage_id in range(num_stages):
