@@ -182,12 +182,10 @@ class PipelineStage:
         return self.backward_recv_queues[key].remove()
 
     def call_forward(self, input_source: OrderedDict[str, Tensor]):
+        inputs = collections.OrderedDict()
         if not self.is_first_stage:
-            inputs = collections.OrderedDict()
             for key in self.keys_from_prev_stage:
                 inputs[key] = self.recv_inputs_from_queue(key)
-        else:
-            inputs = {}
         for key in self.keys_from_source:
             inputs[key] = input_source[key].to(self.device)
         assert len(inputs) > 0, 'No input is set.'
