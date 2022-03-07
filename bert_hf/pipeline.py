@@ -258,8 +258,7 @@ class PipelineStage:
         self.handles.append(dist.all_reduce(self.packed_grads[-1], group=self.grad_sync_group, async_op=True))
 
     def waitall(self):
-        l = len(self.handles)
-        for _ in range(l):
+        for _ in range(len(self.handles)):
             self.handles.pop(0).wait()
             packed_tensor = self.packed_grads.pop(0) / self.grad_sync_group.size()
             vector_to_parameters(packed_tensor, self.grads.pop(0))
