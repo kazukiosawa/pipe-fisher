@@ -215,15 +215,16 @@ class PipelineStage:
         if not self.is_last_stage:
             grad_tensors = tuple(self.recv_output_grads_from_queue(key) for key in outputs)
 
-        input_grads = {}
-        def hook_wrapper(key):
-            def hook(input_gradient):
-                input_grads[key] = input_gradient
+        input_grads = collections.OrderedDict()
+
+        def get_hook(key):
+            def hook(grad):
+                input_grads[key] = grad
             return hook
 
         if not self.is_first_stage:
             for key in self.keys_from_prev_stage:
-                inputs[key].register_hook(hook_wrapper(key))
+                inputs[key].register_hook(get_hook(key))
 
         with self.no_sync_if_need(no_sync):
             torch.autograd.backward(out_tensors, grad_tensors=grad_tensors)
