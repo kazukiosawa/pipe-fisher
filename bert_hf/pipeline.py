@@ -213,11 +213,7 @@ class PipelineStage:
         out_tensors = tuple(outputs.values())
         grad_tensors = None
         if not self.is_last_stage:
-            grad_dict = {}
-            for key in outputs:
-                grad_dict[key] = self.recv_output_grads_from_queue(key)
-            grad_tensors = tuple(grad_dict[key] for key in grad_dict)
-            assert len(out_tensors) == len(grad_tensors), 'output_grads are not set yet.'
+            grad_tensors = tuple(self.recv_output_grads_from_queue(key) for key in outputs)
 
         input_grads = {}
         def hook_wrapper(key):
