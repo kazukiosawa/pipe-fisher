@@ -183,7 +183,6 @@ if __name__ == "__main__":
         return PipelineStage(stage_id=stage_id,
                              num_stages=num_stages,
                              stage_module=stage_module,
-                             num_batch_dims=2,  # batch_size, max_seq_length
                              pipeline_method=args.pipeline_method,
                              recompute=recompute,
                              prev_rank=rank-rank_interval if stage_id > 0 else None,

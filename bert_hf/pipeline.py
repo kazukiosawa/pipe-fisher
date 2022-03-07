@@ -58,7 +58,6 @@ class PipelineStage:
                  stage_id: int,
                  num_stages: int,
                  stage_module: Union[StageModule, DistributedDataParallel],
-                 num_batch_dims: int = 1,
                  prev_rank: int = None,
                  next_rank: int = None,
                  grad_sync_group: dist.ProcessGroup = None,
@@ -72,7 +71,6 @@ class PipelineStage:
         self.stage_id = stage_id
         self.num_stages = num_stages
         self.stage_module = stage_module
-        self.num_batch_dims = num_batch_dims
         self.input_output_queue: Deque[Tuple[OrderedDict[str, Tensor], OrderedDict[str, Tensor]]] = deque()
         self.prev_rank = prev_rank
         self.next_rank = next_rank
