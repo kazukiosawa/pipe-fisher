@@ -112,9 +112,10 @@ class PipelineStage:
 
     @property
     def keys_and_sizes_from_prev_stage(self):
-        if isinstance(self.stage_module, DistributedDataParallel):
-            return self.stage_module.module.keys_and_sizes_from_prev_stage
-        return self.stage_module.keys_and_sizes_from_prev_stage
+        stage_module = self.stage_module
+        if isinstance(stage_module, DistributedDataParallel):
+            stage_module = stage_module.module
+        return stage_module.keys_and_sizes_from_prev_stage
 
     @property
     def keys_from_prev_stage(self):
@@ -122,9 +123,10 @@ class PipelineStage:
 
     @property
     def keys_and_sizes_of_next_stage(self):
-        if isinstance(self.stage_module, DistributedDataParallel):
-            return self.stage_module.module.keys_and_sizes_of_next_stage
-        return self.stage_module.keys_and_sizes_of_next_stage
+        stage_module = self.stage_module
+        if isinstance(stage_module, DistributedDataParallel):
+            stage_module = stage_module.module
+        return stage_module.keys_and_sizes_of_next_stage
 
     @property
     def keys_of_next_stage(self):
