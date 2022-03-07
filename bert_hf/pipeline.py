@@ -360,13 +360,13 @@ class PipelineStage:
 
         for acc_step in range(acc_steps):
             if acc_step == 0:
-                for step in range(schedule_number_a):
+                for _ in range(schedule_number_a):
                     if first_half:
                         self.call_forward(next(data_iterator))
                     else:
                         self.up_pipe_stage.call_forward(next(data_iterator))
             else:
-                for step in range(schedule_number_a):
+                for _ in range(schedule_number_a):
                     if first_half:
                         self.call_backward()
                         self.call_forward(next(data_iterator))
@@ -374,7 +374,7 @@ class PipelineStage:
                         self.up_pipe_stage.call_backward()
                         self.up_pipe_stage.call_forward(next(data_iterator))
 
-            for step in range(schedule_number_b):
+            for _ in range(schedule_number_b):
                 if first_half:
                     self.up_pipe_stage.call_forward(next(data_iterator))
                     self.call_forward(next(data_iterator))
@@ -382,7 +382,7 @@ class PipelineStage:
                     self.call_forward(next(data_iterator))
                     self.up_pipe_stage.call_forward(next(data_iterator))
 
-            for step in range(schedule_number_a):
+            for _ in range(schedule_number_a):
                 if first_half:
                     self.up_pipe_stage.call_forward(next(data_iterator))
                     self.up_pipe_stage.call_backward()
@@ -390,7 +390,7 @@ class PipelineStage:
                     self.call_forward(next(data_iterator))
                     self.call_backward()
 
-            for step in range(schedule_number_b):
+            for _ in range(schedule_number_b):
                 if first_half:
                     self.call_backward()
                     self.up_pipe_stage.call_backward()
@@ -405,7 +405,7 @@ class PipelineStage:
                 if self.up_pipe_stage.stage_id > half_stages:
                     self.up_pipe_stage.nb_sync_grad()
 
-        for step in range(schedule_number_a):
+        for _ in range(schedule_number_a):
             if first_half:
                 self.call_backward()
             else:
