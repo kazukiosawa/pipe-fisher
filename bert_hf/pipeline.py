@@ -1,6 +1,6 @@
 import collections
 from collections import deque
-from typing import List, Tuple, Deque, OrderedDict, Iterator, Union, Dict, Callable
+from typing import List, Tuple, Deque, OrderedDict, Iterator, Union, Dict
 from contextlib import nullcontext
 
 import torch
