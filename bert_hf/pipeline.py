@@ -207,7 +207,6 @@ class PipelineStage:
         assert len(self.input_output_queue) > 0, 'No input/output is set.'
         # pop inputs/outputs from the queue
         inputs, outputs = self.input_output_queue.popleft()
-
         if self.recompute:
             outputs = self.stage_module(**inputs)
 
@@ -218,7 +217,6 @@ class PipelineStage:
             for key in outputs:
                 grad_dict[key] = self.recv_output_grads_from_queue(key)
             grad_tensors = tuple(grad_dict[key] for key in grad_dict)
-
             assert len(out_tensors) == len(grad_tensors), 'output_grads are not set yet.'
 
         input_grads = {}
