@@ -33,7 +33,7 @@ def recv_comm_thread(num_iterations, queue, src_rank, tag, tensor_shape, device)
     for i in range(num_iterations):
         recv_tensor = torch.zeros(tensor_shape, requires_grad=True)
         dist.recv(tensor=recv_tensor, src=src_rank, tag=tag)
-        queue.add(recv_tensor.cuda())
+        queue.add(recv_tensor.to(device))
 
 
 def send_comm_thread(num_iterations, queue, dst_rank, tag):
