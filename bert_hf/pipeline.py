@@ -39,7 +39,6 @@ def recv_comm_thread(num_iterations, queue, src_rank, tag, tensor_shape, device)
 def send_comm_thread(num_iterations, queue, dst_rank, tag):
     for i in range(num_iterations):
         send_tensor = queue.remove()
-
         send_tensor = send_tensor.cpu()
         dist.send(tensor=send_tensor, dst=dst_rank, tag=tag)
 
