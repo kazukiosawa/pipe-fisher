@@ -274,21 +274,28 @@ class PipelineStage:
             for queue in queues.values():
                 assert len(queue) == 0
 
-    def call_pipeline(self, data_iterator: Iterator, num_micro_batches, pipeline_method=None):
+    def call_pipeline(self,
+                      data_iterator: Iterator,
+                      num_micro_batches,
+                      pipeline_method=None,
+                      data_iterator_for_up_pipe: Iterator = None):
         if pipeline_method is None:
             pipeline_method = self.pipeline_method
+
+        kwargs = dict(data_iterator=data_iterator, num_micro_batches=num_micro_batches)
         if pipeline_method == PIPELINE_1F1B:
             _call_pipeline = self._call_1f1b_pipeline
         elif pipeline_method == PIPELINE_GPIPE:
             _call_pipeline = self._call_gpipe_pipeline
         elif pipeline_method == PIPELINE_CHIMERA:
             _call_pipeline = self._call_chimera_pipeline
+            kwargs['data_iterator_for_up_pipe'] = data_iterator_for_up_pipe
         else:
             raise ValueError(f'Invalid pipeline_method: {pipeline_method}')
 
         self.total_loss = 0.
         self.assert_all_queues_are_empty()
-        _call_pipeline(data_iterator, num_micro_batches)
+        _call_pipeline(**kwargs)
         self.assert_all_queues_are_empty()
         return self.total_loss
 
@@ -318,87 +325,86 @@ class PipelineStage:
         if self.grad_sync_group is not None and self.grad_sync_group.size() > 1:
             self.sync_grad()
 
-    def _call_chimera_pipeline(self, data_iterator: Iterator, num_micro_batches):
+    def _call_chimera_pipeline(self,
+                               data_iterator: Iterator,
+                               data_iterator_for_up_pipe: Iterator,
+                               num_micro_batches):
+        """
+        Chimera with dual pipelines
+        """
         assert self.num_stages % 2 == 0, 'The number of stages should be an even value.'
-        assert num_micro_batches % self.num_stages == 0, 'Num_micro_batches should be a multiple of num_stages.'
-        acc_steps = num_micro_batches // self.num_stages        
+        assert num_micro_batches * 2 % self.num_stages == 0, 'num_micro_batches*2 should be a multiple of num_stages.'
+        acc_steps = num_micro_batches * 2 // self.num_stages
         half_stages = self.num_stages // 2
         first_half = self.stage_id // half_stages == 0
 
         schedule_number_a = half_stages - self.stage_id
         if schedule_number_a <= 0:
             schedule_number_a = -schedule_number_a + 1
-
         schedule_number_b = half_stages - schedule_number_a
 
-        for acc_step in range(acc_steps):
-            if acc_step == 0:
-                for _ in range(schedule_number_a):
-                    if first_half:
-                        self.call_forward(next(data_iterator))
-                    else:
-                        self.up_pipe_stage.call_forward(next(data_iterator))
+        def call(func_name, down_or_up, up_side_down=False, with_data=False):
+            if up_side_down:
+                down_or_up = 'up' if down_or_up == 'down' else 'down'
+            args = []
+            if with_data:
+                data = next(data_iterator) if down_or_up == 'down' else next(data_iterator_for_up_pipe)
+                args.append(data)
+            if down_or_up == 'down':
+                getattr(self, func_name)(*args)
             else:
-                for _ in range(schedule_number_a):
-                    if first_half:
-                        self.call_backward()
-                        self.call_forward(next(data_iterator))
-                    else:
-                        self.up_pipe_stage.call_backward()
-                        self.up_pipe_stage.call_forward(next(data_iterator))
+                getattr(self.up_pipe_stage, func_name)(*args)
+
+        def forward(down_or_up):
+            call('call_forward', down_or_up, up_side_down=not first_half, with_data=True)
+
+        def backward(down_or_up):
+            call('call_backward', down_or_up, up_side_down=not first_half)
+
+        def wait_all(down_or_up):
+            call('wait_all', down_or_up, up_side_down=not first_half)
+
+        def sync_grad(down_or_up):
+            call('nb_sync_grad', down_or_up)
+
+        for acc_step in range(acc_steps):
+            for _ in range(schedule_number_a):
+                if acc_step > 0:
+                    backward('down')
+                forward('down')
 
             for _ in range(schedule_number_b):
-                if first_half:
-                    self.up_pipe_stage.call_forward(next(data_iterator))
-                    self.call_forward(next(data_iterator))
-                else:
-                    self.call_forward(next(data_iterator))
-                    self.up_pipe_stage.call_forward(next(data_iterator))
+                forward('up')
+                forward('down')
 
             for _ in range(schedule_number_a):
-                if first_half:
-                    self.up_pipe_stage.call_forward(next(data_iterator))
-                    self.up_pipe_stage.call_backward()
-                else:
-                    self.call_forward(next(data_iterator))
-                    self.call_backward()
+                forward('up')
+                backward('up')
 
             for _ in range(schedule_number_b):
-                if first_half:
-                    self.call_backward()
-                    self.up_pipe_stage.call_backward()
-                else:
-                    self.up_pipe_stage.call_backward()
-                    self.call_backward()
+                backward('down')
+                backward('up')
 
-            # early invoke grad_sync
+            # early invoke sync_grad
             if acc_step == acc_steps - 1:
                 if self.stage_id > half_stages:
-                    self.nb_sync_grad()
-                if self.up_pipe_stage.stage_id > half_stages:
-                    self.up_pipe_stage.nb_sync_grad()
+                    sync_grad('down')
+                elif self.up_pipe_stage.stage_id > half_stages:
+                    sync_grad('up')
 
         for _ in range(schedule_number_a):
-            if first_half:
-                self.call_backward()
-            else:
-                self.up_pipe_stage.call_backward()
+            backward('down')
 
         if self.stage_id == half_stages:
-            self.nb_sync_grad()
-            self.up_pipe_stage.nb_sync_grad()
-        if self.up_pipe_stage.stage_id == half_stages:
-            self.up_pipe_stage.nb_sync_grad()
-            self.nb_sync_grad()
+            sync_grad('down')
+            sync_grad('up')
+        elif self.up_pipe_stage.stage_id == half_stages:
+            sync_grad('up')
+            sync_grad('down')
+        elif self.stage_id > half_stages:
+            sync_grad('up')
+        elif self.up_pipe_stage.stage_id > half_stages:
+            sync_grad('down')
 
-        if self.stage_id > half_stages:
-            self.up_pipe_stage.nb_sync_grad()
-        if self.up_pipe_stage.stage_id > half_stages:
-            self.nb_sync_grad()
-
-        if first_half:
-            self.up_pipe_stage.wait_all()
-            self.wait_all()
-        else:
-            self.wait_all()
-            self.up_pipe_stage.wait_all()
+        wait_all('up')
+        wait_all('down')

@@ -97,22 +97,24 @@ def main():
 
 
 def train_one_epoch(epoch, step, num_steps_for_this_epoch):
-    stage.stage_module.train()
     num_p2p_comm = num_steps_for_this_epoch * num_micro_batches_per_step
-    if dual_pipelines:
-        num_p2p_comm //= 2
-        stage.up_pipe_stage.stage_module.train()
-        stage.up_pipe_stage.start_comm_threads(num_p2p_comm)
     stage.start_comm_threads(num_p2p_comm)
+    stage.stage_module.train()
+    if dual_pipelines:
+        stage.up_pipe_stage.start_comm_threads(num_p2p_comm)
+        stage.up_pipe_stage.stage_module.train()
 
     train_iterator = iter(train_loader)
+    train_iterator_for_up_pipe = iter(train_loader_for_up_pipe) if dual_pipelines else None
 
     for i in range(num_steps_for_this_epoch):
         dist.barrier()
         for optimizer in optimizers:
             optimizer.zero_grad()
 
-        loss = stage.call_pipeline(train_iterator, num_micro_batches_per_step)
+        loss = stage.call_pipeline(train_iterator,
+                                   num_micro_batches=num_micro_batches_per_step,
+                                   data_iterator_for_up_pipe=train_iterator_for_up_pipe)
 
         for optimizer in optimizers:
             optimizer.step()
@@ -121,7 +123,7 @@ def train_one_epoch(epoch, step, num_steps_for_this_epoch):
         dist.reduce(loss, dst=0)
         loss /= total_num_micro_batches_per_step
         if dual_pipelines:
-            loss *= 2  # each pipeline handles half micro_batches
+            loss *= 2
         if is_master:
             print(f'epoch{epoch+1} step{step+i+1} loss = {float(loss)}')
 
@@ -150,6 +152,8 @@ if __name__ == "__main__":
     num_ranks_per_stage = int(world_size / num_stages)
     num_replicas = num_ranks_per_stage
     dual_pipelines = args.pipeline_method == PIPELINE_CHIMERA
+    if dual_pipelines:
+        num_replicas *= 2
 
     def rank_to_stage(_rank, down_pipe=True):
         if down_pipe:
@@ -201,19 +205,27 @@ if __name__ == "__main__":
                                 corpus_lines=args.corpus_lines,
                                 encoding='latin-1',
                                 on_memory=args.on_memory)
-    if num_replicas > 1:
-        rank_in_stage = rank % num_ranks_per_stage
-        train_sampler = DistributedSampler(train_dataset, num_replicas=num_replicas, rank=rank_in_stage) # DistributedSampler for Chimera?
-    else:
-        train_sampler = None
-    train_loader = DataLoader(train_dataset,
-                              sampler=train_sampler,
-                              batch_size=micro_batch_size,
-                              drop_last=True,
-                              num_workers=args.num_workers)
+
+    def get_train_loader(down_pipe=True):
+        sampler = None
+        if num_replicas > 1:
+            rank_in_replicas = rank_in_stage = rank % num_ranks_per_stage
+            if dual_pipelines:
+                rank_in_replicas = 2 * rank_in_stage + int(not down_pipe)
+            sampler = DistributedSampler(train_dataset, num_replicas=num_replicas, rank=rank_in_replicas)
+        return DataLoader(train_dataset,
+                          sampler=sampler,
+                          batch_size=micro_batch_size,
+                          drop_last=True,
+                          num_workers=args.num_workers)
+
+    train_loader = get_train_loader()
+    train_loader_for_up_pipe = get_train_loader(down_pipe=False) if dual_pipelines else None
 
     # Set the number of optimization steps and epochs
     num_micro_batches_per_step = num_stages * args.gradient_accumulation_steps
+    if dual_pipelines:
+        num_micro_batches_per_step //= 2  # each pipeline handles half micro_batches
     total_num_micro_batches_per_step = num_replicas * num_micro_batches_per_step
     total_num_samples_per_step = total_num_micro_batches_per_step * micro_batch_size
     max_steps_per_epoch = len(train_dataset) // total_num_samples_per_step
