@@ -150,8 +150,6 @@ if __name__ == "__main__":
     num_ranks_per_stage = int(world_size / num_stages)
     num_replicas = num_ranks_per_stage
     dual_pipelines = args.pipeline_method == PIPELINE_CHIMERA
-#    if dual_pipelines:
-#        num_replicas *= 2
 
     def rank_to_stage(_rank, down_pipe=True):
         if down_pipe:
