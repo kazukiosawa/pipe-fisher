@@ -51,7 +51,7 @@ class PipelineStage:
                  pipeline_method: str = None,
                  recompute: bool = False,
                  is_up_pipe: bool = False,
-                 up_pipe_stage = None):
+                 up_pipe_stage=None):
         assert dist.is_initialized(), 'torch.distributed needs to be initialized.'
         assert num_stages > 1, 'num_stages has to be > 1.'
         assert stage_id in range(num_stages), 'stage_id has be in range(num_stage).'
