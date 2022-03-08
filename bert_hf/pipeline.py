@@ -319,8 +319,7 @@ class PipelineStage:
 
         schedule_number_a = half_stages - self.stage_id
         if schedule_number_a <= 0:
-            schedule_number_a = -schedule_number_a
-            schedule_number_a += 1
+            schedule_number_a = -schedule_number_a + 1
 
         schedule_number_b = half_stages - schedule_number_a
 
