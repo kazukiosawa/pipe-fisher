@@ -262,13 +262,12 @@ if __name__ == "__main__":
     if is_master:
         print('============================')
         print(f'pipeline_method: {args.pipeline_method}')
-        print(f'world_size: {world_size}')
-        print(f'num_replica: {num_replicas}')
         print(f'num_epochs: {num_epochs}')
         print(f'num_optimization_steps: {num_steps}')
-        print(f'recompute: {recompute}')
+        print(f'world_size: {world_size}')
+        print(f'num_replica: {num_replicas}')
         print(f'num_micro_batches_per_step: {num_micro_batches_per_step}')
-        print(f'num_ranks_per_stage: {num_ranks_per_stage}')
+        print(f'recompute: {recompute}')
         for _stage_id in range(num_stages):
             print(f'stage{_stage_id}: ranks {stage_to_ranks[_stage_id]}')
         print('----------------------------')
