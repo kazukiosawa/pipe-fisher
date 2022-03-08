@@ -33,23 +33,6 @@ class StageModule(nn.Module):
         raise NotImplementedError
 
 
-def recv_comm_thread(num_iterations, queue, src_rank, tag, tensor_shape, device):
-    for _ in range(num_iterations):
-        recv_tensor = torch.zeros(tensor_shape, requires_grad=True)
-        if dist.get_backend() == dist.Backend.NCCL:
-            recv_tensor = recv_tensor.to(device)
-        dist.recv(tensor=recv_tensor, src=src_rank, tag=tag)
-        queue.add(recv_tensor.to(device))
-
-
-def send_comm_thread(num_iterations, queue, dst_rank, tag):
-    for _ in range(num_iterations):
-        send_tensor = queue.remove()
-        if dist.get_backend() != dist.Backend.NCCL:
-            send_tensor = send_tensor.cpu()
-        dist.send(tensor=send_tensor, dst=dst_rank, tag=tag)
-
-
 def start_comm_thread(func, kwargs):
     comm_thread = threading.Thread(target=func, kwargs=kwargs)
     comm_thread.daemon = True
@@ -147,10 +130,27 @@ class PipelineStage:
                 self.forward_recv_queues[key] = threadsafe_queue.Queue()
                 self.backward_send_queues[key] = threadsafe_queue.Queue()
 
+    @staticmethod
+    def recv_comm_thread(num_iterations, queue, src_rank, tag, tensor_shape, device):
+        for _ in range(num_iterations):
+            recv_tensor = torch.zeros(tensor_shape, requires_grad=True)
+            if dist.get_backend() == dist.Backend.NCCL:
+                recv_tensor = recv_tensor.to(device)
+            dist.recv(tensor=recv_tensor, src=src_rank, tag=tag)
+            queue.add(recv_tensor.to(device))
+
+    @staticmethod
+    def send_comm_thread(num_iterations, queue, dst_rank, tag):
+        for _ in range(num_iterations):
+            send_tensor = queue.remove()
+            if dist.get_backend() != dist.Backend.NCCL:
+                send_tensor = send_tensor.cpu()
+            dist.send(tensor=send_tensor, dst=dst_rank, tag=tag)
+
     def start_comm_threads(self, num_iterations):
         def start_recv_threads(recv_queues, src_rank, tensor_shapes):
             for key, queue in recv_queues.items():
-                start_comm_thread(recv_comm_thread,
+                start_comm_thread(self.recv_comm_thread,
                                   dict(num_iterations=num_iterations,
                                        queue=queue,
                                        src_rank=src_rank,
@@ -160,7 +160,7 @@ class PipelineStage:
 
         def start_send_threads(queues, dst_rank):
             for queue in queues.values():
-                start_comm_thread(send_comm_thread,
+                start_comm_thread(self.send_comm_thread,
                                   dict(num_iterations=num_iterations,
                                        queue=queue,
                                        dst_rank=dst_rank,
