@@ -120,10 +120,9 @@ def train_one_epoch(epoch, step, num_steps_for_this_epoch):
 
         loss = torch.tensor(loss, device=stage.device)
         dist.reduce(loss, dst=0)
-        total_micro_batches = num_replicas * num_micro_batches_per_step
+        loss /= total_num_micro_batches_per_step
         if dual_pipelines:
-            total_micro_batches /= 2  # each pipeline handles half micro_batches
-        loss /= total_micro_batches
+            loss *= 2  # each pipeline handles half micro_batches
         if is_master:
             print(f'epoch{epoch+1} step{step+i+1} loss = {float(loss)}')
 
@@ -215,16 +214,17 @@ if __name__ == "__main__":
 
     # Set the number of optimization steps and epochs
     num_micro_batches_per_step = num_stages * args.gradient_accumulation_steps
-    num_samples_per_step = num_micro_batches_per_step * args.micro_batch_size * num_replicas
-    max_steps_per_epoch = len(train_dataset) // num_samples_per_step
+    total_num_micro_batches_per_step = num_replicas * num_micro_batches_per_step
+    total_num_samples_per_step = total_num_micro_batches_per_step * args.micro_batch_size
+    max_steps_per_epoch = len(train_dataset) // total_num_samples_per_step
     num_steps = args.num_optimization_steps
     if num_steps is None:
         assert args.num_epochs, 'num_optimization_steps or num_epochs needs to be specified.'
         num_epochs = args.num_epochs
         num_steps = max_steps_per_epoch * args.num_epochs
     else:
-        num_samples = num_steps * num_samples_per_step
-        num_epochs = math.ceil(num_samples / len(train_dataset))
+        total_num_samples = num_steps * total_num_samples_per_step
+        num_epochs = math.ceil(total_num_samples / len(train_dataset))
 
     # Prepare optimizers.
     def get_optimizer(module):
