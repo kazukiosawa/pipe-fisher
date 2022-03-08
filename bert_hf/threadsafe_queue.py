@@ -11,6 +11,9 @@ class Queue:
         self.queue = []
         self.cv = threading.Condition()
 
+    def __len__(self):
+        return len(self.queue)
+
     def add(self, tensor):
         self.cv.acquire()
         self.queue.append(tensor)
