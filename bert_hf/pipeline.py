@@ -300,6 +300,9 @@ class PipelineStage:
         return self.total_loss
 
     def _call_1f1b_pipeline(self, data_iterator: Iterator, num_micro_batches):
+        """
+        1F1B
+        """
         num_warmup_steps = self.num_stages - self.stage_id - 1
 
         for _ in range(num_warmup_steps):
@@ -316,6 +319,9 @@ class PipelineStage:
             self.sync_grad()
 
     def _call_gpipe_pipeline(self, data_iterator: Iterator, num_micro_batches):
+        """
+        GPipe
+        """
         for _ in range(num_micro_batches):
             self.call_forward(next(data_iterator))
 
