@@ -120,9 +120,10 @@ def train_one_epoch(epoch, step, num_steps_for_this_epoch):
 
         loss = torch.tensor(loss, device=stage.device)
         dist.reduce(loss, dst=0)
-        loss /= (num_replicas * num_micro_batches_per_step)
+        total_micro_batches = num_replicas * num_micro_batches_per_step
         if dual_pipelines:
-            loss *= 2  # each pipeline handles half micro_batches
+            total_micro_batches /= 2  # each pipeline handles half micro_batches
+        loss /= total_micro_batches
         if is_master:
             print(f'epoch{epoch+1} step{step+i+1} loss = {float(loss)}')
 
