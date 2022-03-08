@@ -102,8 +102,8 @@ def train_one_epoch(epoch, step, num_steps_for_this_epoch):
     batch_sizes = (train_loader.batch_size, args.max_seq_length)
     if dual_pipelines:
         num_p2p_comm //= 2
-        stage.up_pipe_stage.start_comm_threads(num_p2p_comm, batch_sizes)
         stage.up_pipe_stage.stage_module.train()
+        stage.up_pipe_stage.start_comm_threads(num_p2p_comm, batch_sizes)
     stage.start_comm_threads(num_p2p_comm, batch_sizes)
 
     train_iterator = iter(train_loader)
