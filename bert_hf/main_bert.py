@@ -156,8 +156,8 @@ if __name__ == "__main__":
 #    if dual_pipelines:
 #        num_replicas *= 2
 
-    def rank_to_stage(_rank, down=True):
-        if down:
+    def rank_to_stage(_rank, down_pipe=True):
+        if down_pipe:
             return _rank // num_ranks_per_stage
         else:
             return (world_size - 1 - _rank) // num_ranks_per_stage
@@ -166,7 +166,7 @@ if __name__ == "__main__":
     for _rank in range(world_size):
         stage_to_ranks[rank_to_stage(_rank)].append(_rank)
         if dual_pipelines:
-            stage_to_ranks[rank_to_stage(_rank, down=False)].append(_rank)
+            stage_to_ranks[rank_to_stage(_rank, down_pipe=False)].append(_rank)
 
     grad_sync_groups = []
     for _stage_id in range(num_stages):
@@ -176,10 +176,10 @@ if __name__ == "__main__":
     # Prepare BERT pipeline stages
     config = BertConfig.from_json_file(args.bert_config_path)
 
-    def get_pipeline_stage(down=True):
-        stage_id = rank_to_stage(rank, down=down)
+    def get_pipeline_stage(down_pipe=True):
+        stage_id = rank_to_stage(rank, down_pipe=down_pipe)
         stage_module = get_stage_bert_for_pretraining(stage_id, num_stages, config).to(device)
-        rank_interval = num_ranks_per_stage if down else -num_ranks_per_stage
+        rank_interval = num_ranks_per_stage if down_pipe else -num_ranks_per_stage
         return PipelineStage(stage_id=stage_id,
                              num_stages=num_stages,
                              stage_module=stage_module,
@@ -188,8 +188,9 @@ if __name__ == "__main__":
                              prev_rank=rank-rank_interval if stage_id > 0 else None,
                              next_rank=rank+rank_interval if stage_id < num_stages-1 else None,
                              grad_sync_group=grad_sync_groups[stage_id],
-                             is_up_pipe=not down,
-                             up_pipe_stage=get_pipeline_stage(down=False) if down and dual_pipelines else None)
+                             is_up_pipe=not down_pipe,
+                             up_pipe_stage=get_pipeline_stage(
+                                 down_pipe=False) if down_pipe and dual_pipelines else None)
 
     stage = get_pipeline_stage()
     is_stage_master = rank % num_ranks_per_stage == 0
