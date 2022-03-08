@@ -99,12 +99,11 @@ def main():
 def train_one_epoch(epoch, step, num_steps_for_this_epoch):
     stage.stage_module.train()
     num_p2p_comm = num_steps_for_this_epoch * num_micro_batches_per_step
-    batch_sizes = (train_loader.batch_size, args.max_seq_length)
     if dual_pipelines:
         num_p2p_comm //= 2
         stage.up_pipe_stage.stage_module.train()
-        stage.up_pipe_stage.start_comm_threads(num_p2p_comm, batch_sizes)
-    stage.start_comm_threads(num_p2p_comm, batch_sizes)
+        stage.up_pipe_stage.start_comm_threads(num_p2p_comm)
+    stage.start_comm_threads(num_p2p_comm)
 
     train_iterator = iter(train_loader)
 
@@ -173,6 +172,8 @@ if __name__ == "__main__":
 
     # Prepare BERT pipeline stages
     config = BertConfig.from_json_file(args.bert_config_path)
+    micro_batch_size = args.micro_batch_size
+    max_seq_length = args.max_seq_length
 
     def get_pipeline_stage(down_pipe=True):
         stage_id = rank_to_stage(rank, down_pipe=down_pipe)
@@ -181,6 +182,7 @@ if __name__ == "__main__":
         return PipelineStage(stage_id=stage_id,
                              num_stages=num_stages,
                              stage_module=stage_module,
+                             batch_sizes=(micro_batch_size, max_seq_length),
                              pipeline_method=args.pipeline_method,
                              recompute=recompute,
                              prev_rank=rank-rank_interval if stage_id > 0 else None,
@@ -197,7 +199,7 @@ if __name__ == "__main__":
     tokenizer = BertTokenizer(args.vocab_path, do_lower_case=args.do_lower_case)
     train_dataset = BERTDataset(args.corpus_path,
                                 tokenizer,
-                                seq_len=args.max_seq_length,
+                                seq_len=max_seq_length,
                                 corpus_lines=args.corpus_lines,
                                 encoding='latin-1',
                                 on_memory=args.on_memory)
@@ -208,14 +210,14 @@ if __name__ == "__main__":
         train_sampler = None
     train_loader = DataLoader(train_dataset,
                               sampler=train_sampler,
-                              batch_size=args.micro_batch_size,
+                              batch_size=micro_batch_size,
                               drop_last=True,
                               num_workers=args.num_workers)
 
     # Set the number of optimization steps and epochs
     num_micro_batches_per_step = num_stages * args.gradient_accumulation_steps
     total_num_micro_batches_per_step = num_replicas * num_micro_batches_per_step
-    total_num_samples_per_step = total_num_micro_batches_per_step * args.micro_batch_size
+    total_num_samples_per_step = total_num_micro_batches_per_step * micro_batch_size
     max_steps_per_epoch = len(train_dataset) // total_num_samples_per_step
     num_steps = args.num_optimization_steps
     if num_steps is None:

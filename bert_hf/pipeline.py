@@ -61,6 +61,7 @@ class PipelineStage:
                  stage_id: int,
                  num_stages: int,
                  stage_module: Union[StageModule, DistributedDataParallel],
+                 batch_sizes: Tuple[int, ...],
                  prev_rank: int = None,
                  next_rank: int = None,
                  grad_sync_group: dist.ProcessGroup = None,
@@ -74,6 +75,7 @@ class PipelineStage:
         self.stage_id = stage_id
         self.num_stages = num_stages
         self.stage_module = stage_module
+        self.batch_sizes = batch_sizes
         self.input_output_queue: Deque[Tuple[OrderedDict[str, Tensor], OrderedDict[str, Tensor]]] = deque()
         self.prev_rank = prev_rank
         self.next_rank = next_rank
@@ -145,7 +147,7 @@ class PipelineStage:
                 self.forward_recv_queues[key] = threadsafe_queue.Queue()
                 self.backward_send_queues[key] = threadsafe_queue.Queue()
 
-    def start_comm_threads(self, num_iterations, batch_sizes):
+    def start_comm_threads(self, num_iterations):
         def start_recv_threads(recv_queues, src_rank, tensor_shapes):
             for key, queue in recv_queues.items():
                 start_comm_thread(recv_comm_thread,
@@ -153,7 +155,7 @@ class PipelineStage:
                                        queue=queue,
                                        src_rank=src_rank,
                                        tag=self.tag,
-                                       tensor_shape=batch_sizes + tensor_shapes[key],
+                                       tensor_shape=self.batch_sizes + tensor_shapes[key],
                                        device=self.device))
 
         def start_send_threads(queues, dst_rank):
