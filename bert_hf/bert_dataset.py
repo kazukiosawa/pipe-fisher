@@ -115,11 +115,14 @@ class BERTDataset(Dataset):
         if random.random() > 0.5:
             label = 0
         else:
-            t2 = self.get_random_line()
+            while True:
+                t2 = self.get_random_line()
+                if len(t2) > 0:
+                    break
             label = 1
 
-        assert len(t1) > 0
-        assert len(t2) > 0
+        assert len(t1) > 0, "empty t1 in random_send"
+        assert len(t2) > 0, "empty t2 in random_send"
         return t1, t2, label
 
     def get_corpus_line(self, item):
@@ -130,7 +133,7 @@ class BERTDataset(Dataset):
         """
         t1 = ""
         t2 = ""
-        assert item < self.corpus_lines
+        assert item < self.corpus_lines, "out of dataset bound"
         if self.on_memory:
             sample = self.sample_to_doc[item]
             t1 = self.all_docs[sample["doc_id"]][sample["line"]]
@@ -155,8 +158,8 @@ class BERTDataset(Dataset):
                     self.current_doc = self.current_doc+1
             self.line_buffer = t2
 
-        assert t1 != ""
-        assert t2 != ""
+        assert t1 != "", "t1 empty"
+        assert t2 != "", "t2 empty"
         return t1, t2
 
     def get_random_line(self):
@@ -335,10 +338,10 @@ def convert_example_to_features(example, max_seq_length, tokenizer):
         segment_ids.append(0)
         lm_label_ids.append(-100)
 
-    assert len(input_ids) == max_seq_length
-    assert len(input_mask) == max_seq_length
-    assert len(segment_ids) == max_seq_length
-    assert len(lm_label_ids) == max_seq_length
+    assert len(input_ids) == max_seq_length, "input_ids not equal to max len"
+    assert len(input_mask) == max_seq_length, "input_mask not equal to max len"
+    assert len(segment_ids) == max_seq_length, "segment_ids not equal to max len"
+    assert len(lm_label_ids) == max_seq_length, "lm_label_ids not equal to max len"
 
     features = InputFeatures(input_ids=input_ids,
                              input_mask=input_mask,
