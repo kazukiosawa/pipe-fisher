@@ -25,7 +25,8 @@ BertPreTrainingHeads = dummy_model.cls.__class__
 def get_stage_bert_for_pretraining(stage_id: int,
                                    num_stages: int,
                                    config: BertConfig,
-                                   hidden_layers_assignments: List[int] = None) -> StageModule:
+                                   hidden_layers_assignments: List[int] = None,
+                                   loss_reduction='mean') -> StageModule:
     """
     start_stage (stage_id == 0): BertEmbeddings + [BertLayer] * N_s
     intermediate_stage (0 < stage_id < num_stages - 1): [BertLayer] * N_i
@@ -52,7 +53,7 @@ def get_stage_bert_for_pretraining(stage_id: int,
     if stage_id == 0:
         return StartingStage(config)
     elif stage_id == num_stages - 1:
-        return EndingStage(config)
+        return EndingStage(config, loss_reduction=loss_reduction)
     else:
         return IntermediateStage(config)
 
