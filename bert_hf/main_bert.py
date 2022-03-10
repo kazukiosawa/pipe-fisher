@@ -67,6 +67,8 @@ parser.add_argument('--seed', type=int, default=1,
 parser.add_argument('--p2p_backend', default=dist.Backend.GLOO, type=str)
 parser.add_argument('--collective_backend', default=dist.Backend.NCCL, type=str)
 parser.add_argument('--num_workers', default=4, type=int)
+parser.add_argument('--profile', action='store_true')
+parser.add_argument('--log_interval', type=int, default=100)
 
 
 def main():
@@ -119,13 +121,14 @@ def train_one_epoch(epoch, step, num_steps_for_this_epoch):
         for optimizer in optimizers:
             optimizer.step()
 
-        loss = torch.tensor(loss, device=stage.device)
-        dist.reduce(loss, dst=0)
-        loss /= total_num_micro_batches_per_step
-        if dual_pipelines:
-            loss *= 2
-        if is_master:
-            print(f'epoch{epoch+1} step{step+i+1} loss = {float(loss)}')
+        if i % args.log_interval == 0:
+            loss = torch.tensor(loss, device=stage.device)
+            dist.reduce(loss, dst=0)
+            loss /= total_num_micro_batches_per_step
+            if dual_pipelines:
+                loss *= 2
+            if is_master:
+                print(f'epoch{epoch+1} step{step+i+1} loss = {float(loss)}')
 
 
 if __name__ == "__main__":
@@ -275,4 +278,8 @@ if __name__ == "__main__":
             print(f'{key}: {value}')
         print('============================')
 
-    main()
+    if args.profile:
+        with torch.cuda.profiler.profile():
+            main()
+    else:
+        main()
