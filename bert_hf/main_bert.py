@@ -110,7 +110,6 @@ def train_one_epoch(epoch, step, num_steps_for_this_epoch):
     train_iterator_for_up_pipe = iter(train_loader_for_up_pipe) if dual_pipelines else None
 
     for i in range(num_steps_for_this_epoch):
-        dist.barrier()
         for optimizer in optimizers:
             optimizer.zero_grad()
 
