@@ -13,11 +13,13 @@ import torch.distributed as dist
 
 from transformers import BertTokenizer, BertConfig
 
-from pipeline import PipelineStage, PIPELINE_1F1B, PIPELINE_GPIPE, PIPELINE_CHIMERA
+from pipeline import PipelineStage, PIPELINE_1F1B, PIPELINE_GPIPE, PIPELINE_CHIMERA, PIPELINE_GPIPE_NGD, PIPELINE_GPIPE_NGD_SAVE
 from utils import init_dist_process_group
 from bert_optim import BertAdam
 from bert_dataset import BERTDataset
 from bert_model import get_stage_bert_for_pretraining
+
+import asdfghjkl as asdl
 
 
 logging.basicConfig(format='%(asctime)s - %(message)s', level=logging.INFO)
@@ -54,7 +56,7 @@ parser.add_argument("--weight_decay", type=float, default=0.01)
 parser.add_argument("--warmup_proportion", default=0.1, type=float,
                     help="Proportion of training to perform linear learning rate warmup for.")
 # Pipeline
-parser.add_argument('--pipeline_method', choices=[PIPELINE_1F1B, PIPELINE_GPIPE, PIPELINE_CHIMERA], default=PIPELINE_1F1B)
+parser.add_argument('--pipeline_method', choices=[PIPELINE_1F1B, PIPELINE_GPIPE, PIPELINE_CHIMERA, PIPELINE_GPIPE_NGD, PIPELINE_GPIPE_NGD_SAVE], default=PIPELINE_1F1B)
 parser.add_argument('--recompute', action='store_true',
                     help='Recompute activations in backward pass')
 parser.add_argument('--num_stages', type=int, default=4,
@@ -115,7 +117,9 @@ def train_one_epoch(epoch, step, num_steps_for_this_epoch):
 
         loss = stage.call_pipeline(train_iterator,
                                    num_micro_batches=num_micro_batches_per_step,
-                                   data_iterator_for_up_pipe=train_iterator_for_up_pipe)
+                                   data_iterator_for_up_pipe=train_iterator_for_up_pipe,
+                                   ngd=ngd,
+                                   iteration=i)
 
         for optimizer in optimizers:
             optimizer.step()
@@ -259,6 +263,14 @@ if __name__ == "__main__":
     optimizers = [get_optimizer(stage.stage_module)]
     if dual_pipelines:
         optimizers.append(get_optimizer(stage.up_pipe_stage.stage_module))
+
+    ngd = None
+    if args.pipeline_method in [PIPELINE_GPIPE_NGD, PIPELINE_GPIPE_NGD_SAVE]:
+        ngd = asdl.EmpiricalNaturalGradient(stage.stage_module,
+                                            fisher_shape=[(nn.Linear, asdl.SHAPE_KRON),
+                                                          (nn.LayerNorm, asdl.SHAPE_UNIT_WISE)],
+                                            damping=1e-2,
+                                            ignore_modules=['cls.'])
 
     dist.barrier()
     if is_master:

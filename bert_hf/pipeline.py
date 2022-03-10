@@ -266,13 +266,11 @@ class PipelineStage:
             vector_to_parameters(packed_tensor, self.grads.pop(0))
 
     def assert_all_queues_are_empty(self):
-        assert len(self.input_output_queue) == 0
-        for queues in [self.forward_recv_queues,
-                       self.forward_send_queues,
-                       self.backward_recv_queues,
-                       self.backward_send_queues]:
-            for queue in queues.values():
-                assert len(queue) == 0
+        assert len(self.input_output_queue) == 0, f'input_output_queue of stage{self.stage_id} is not empty.'
+        for name, queues in [('forward_send', self.forward_send_queues),
+                             ('backward_recv', self.backward_recv_queues)]:
+            for key, queue in queues.items():
+                assert len(queue) == 0, f'{name}_queue for {key} of stage{self.stage_id} is not empty.'
 
     def call_pipeline(self,
                       data_iterator: Iterator,
