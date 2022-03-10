@@ -411,11 +411,9 @@ class PipelineStage:
                 ngd.update_curvature(cxt=cxt, accumulate=i > 0)
                 if self.is_distributed:
                     ngd.reduce_scatter_fisher('kron', 'A')
-                with nvtx.range('update_A_inv'):
-                    ngd.update_inv(kron_targets=['A'])
+                ngd.update_inv(kron_targets=['A'])
                 if update_prev_B_inv:
-                    with nvtx.range('update_B_inv'):
-                        ngd.update_inv(kron_targets=['B'])
+                    ngd.update_inv(kron_targets=['B'])
 
             for i in range(num_micro_batches):
                 self.call_backward()
@@ -432,11 +430,9 @@ class PipelineStage:
             ngd.reduce_scatter_fisher('kron', 'B')
         if self.is_last_stage:
             if iteration == 0 or iteration % 2 == 1:
-                with nvtx.range('update_AB_inv'):
-                    ngd.update_inv(kron_targets=['A', 'B'])
+                ngd.update_inv(kron_targets=['A', 'B'])
         elif not update_prev_B_inv:
-            with nvtx.range('update_B_inv'):
-                ngd.update_inv(kron_targets=['B'])
+            ngd.update_inv(kron_targets=['B'])
 
         if self.is_distributed:
             ngd.reduce_scatter_grad()
