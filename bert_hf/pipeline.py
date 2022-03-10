@@ -183,6 +183,7 @@ class PipelineStage:
     def recv_output_grads_from_queue(self, key):
         return self.backward_recv_queues[key].remove()
 
+    @nvtx.range('call_forward')
     def call_forward(self, input_source: OrderedDict[str, Tensor]):
         inputs = collections.OrderedDict()
         if not self.is_first_stage:
@@ -205,6 +206,7 @@ class PipelineStage:
         # push inputs/outputs to the queue
         self.input_output_queue.append((inputs, outputs))
 
+    @nvtx.range('call_backward')
     def call_backward(self, no_sync=True):
         assert len(self.input_output_queue) > 0, 'No input/output is set.'
         # pop inputs/outputs from the queue
@@ -272,6 +274,7 @@ class PipelineStage:
             for key, queue in queues.items():
                 assert len(queue) == 0, f'{name}_queue for {key} of stage{self.stage_id} is not empty.'
 
+    @nvtx.range('call_pipeline')
     def call_pipeline(self,
                       data_iterator: Iterator,
                       num_micro_batches,
