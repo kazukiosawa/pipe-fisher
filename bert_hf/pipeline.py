@@ -267,7 +267,7 @@ class PipelineStage:
             packed_tensor = self.packed_grads.pop(0) / self.grad_sync_group.size()
             vector_to_parameters(packed_tensor, self.grads.pop(0))
 
-    def assert_all_queues_are_empty(self):
+    def assert_intermediate_queues_are_empty(self):
         assert len(self.input_output_queue) == 0, f'input_output_queue of stage{self.stage_id} is not empty.'
         for name, queues in [('forward_send', self.forward_send_queues),
                              ('backward_recv', self.backward_recv_queues)]:
@@ -295,9 +295,9 @@ class PipelineStage:
             raise ValueError(f'Invalid pipeline_method: {pipeline_method}')
 
         self.total_loss = 0.
-        self.assert_all_queues_are_empty()
+        self.assert_intermediate_queues_are_empty()
         _call_pipeline(**kwargs)
-        self.assert_all_queues_are_empty()
+        self.assert_intermediate_queues_are_empty()
         return self.total_loss
 
     def _call_1f1b_pipeline(self, data_iterator: Iterator, num_micro_batches):
