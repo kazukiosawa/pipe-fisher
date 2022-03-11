@@ -11,7 +11,7 @@ from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 import torch.distributed as dist
 
-from transformers import BertTokenizer, BertConfig
+from transformers import BertTokenizer, BertConfig, BertLayer
 
 from pipeline import PipelineStage, PIPELINE_1F1B, PIPELINE_GPIPE, PIPELINE_CHIMERA, PIPELINE_GPIPE_NGD
 from utils import init_dist_process_group
@@ -264,13 +264,22 @@ if __name__ == "__main__":
     if dual_pipelines:
         optimizers.append(get_optimizer(stage.up_pipe_stage.stage_module))
 
-    ngd = None
+    ngd = ngd_for_up_pipe = None
     if args.pipeline_method in [PIPELINE_GPIPE_NGD]:
+        module_partitions = None
+        if num_replicas > 1:
+            bert_layers = [m for m in stage.stage_module.modules() if isinstance(m, BertLayer)]
+            partition_size = int(len(bert_layers) / num_replicas)  # floor
+            if partition_size > 0:
+                module_partitions = [bert_layers[partition_size * i: partition_size * i + partition_size]
+                                     for i in range(num_replicas)]
         ngd = asdl.EmpiricalNaturalGradient(stage.stage_module,
                                             fisher_shape=[(nn.Linear, asdl.SHAPE_KRON),
                                                           (nn.LayerNorm, asdl.SHAPE_UNIT_WISE)],
                                             damping=1e-2,
-                                            ignore_modules=['cls.'])
+                                            ignore_modules=['cls.'],
+                                            sync_group=grad_sync_groups[rank_to_stage(rank)],
+                                            module_partitions=module_partitions)
 
     dist.barrier()
     if is_master:
