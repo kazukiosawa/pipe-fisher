@@ -271,8 +271,12 @@ if __name__ == "__main__":
             bert_layers = [m for m in stage.stage_module.modules() if isinstance(m, BertLayer)]
             partition_size = int(len(bert_layers) / num_replicas)  # floor
             if partition_size > 0:
-                module_partitions = [bert_layers[partition_size * i: partition_size * i + partition_size]
-                                     for i in range(num_replicas)]
+                module_partitions = []
+                for i in range(num_replicas):
+                    module_list = nn.ModuleList(bert_layers[partition_size * i: partition_size * i + partition_size])
+                    module_partitions.append([m for m in module_list.modules()
+                                              if isinstance(m, (nn.Linear, nn.LayerNorm))])
+
         ngd = asdl.EmpiricalNaturalGradient(stage.stage_module,
                                             fisher_shape=[(nn.Linear, asdl.SHAPE_KRON),
                                                           (nn.LayerNorm, asdl.SHAPE_UNIT_WISE)],
