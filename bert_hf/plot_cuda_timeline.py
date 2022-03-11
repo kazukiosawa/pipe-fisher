@@ -17,11 +17,11 @@ key_to_color_label = OrderedDict(
     {
         'call_forward': ('C0', 'forward'),
         'call_backward': ('C1', 'backward'),
-        'cov_kron_A': ('C2', 'A'),
-        'cov_kron_B': ('C4', 'B'),
-        'inv_kron_A': ('C5', 'inv(A)'),
-        'inv_kron_B': ('C6', 'inv(B)'),
-        'precondition': ('C8', 'precond'),
+        'cov_kron_A': ('C2', 'curvature'),
+        'cov_kron_B': ('C2', None),
+        'inv_kron_A': ('C4', 'inv'),
+        'inv_kron_B': ('C4', None),
+        'precondition': ('C8', 'precondition'),
     }
 )
 
@@ -44,7 +44,7 @@ def main():
         return (t - min_time) / 10 ** 6  # ns -> ms
 
     used_keys = set()
-    width = .8
+    width = .95
     for idx, timeline in enumerate(timelines):
         y = len(timelines) - idx - 1
         for i, key in enumerate(timeline):
@@ -70,7 +70,7 @@ def main():
     ax.set_xlim(time_shift(min_time), time_shift(max_time))
 
     for i, (start, _) in enumerate(timelines[0]['start_end'][1:]):
-        ax.axvline(time_shift(start), color='r', lw=7, label='flush' if i == 0 else None)
+        ax.axvline(time_shift(start), color='r', lw=7, label='flush @ GPU0' if i == 0 else None)
     for key, (color, label) in key_to_color_label.items():
         if key in used_keys:
             ax.bar(0, 0, label=label, color=color)

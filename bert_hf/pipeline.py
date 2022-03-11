@@ -252,6 +252,7 @@ class PipelineStage:
             return self.stage_module.no_sync()
         return nullcontext()
 
+    @nvtx.range('sync_grad')
     def sync_grad(self):
         assert self.grad_sync_group is not None, 'grad_sync_group is not specified.'
         dist.barrier(group=self.grad_sync_group)
@@ -261,6 +262,7 @@ class PipelineStage:
         packed_tensor /= self.grad_sync_group.size()
         vector_to_parameters(packed_tensor, grads)
 
+    @nvtx.range('nb_sync_grad')
     def nb_sync_grad(self):
         assert self.grad_sync_group is not None, 'grad_sync_group is not specified.'
         dist.barrier(group=self.grad_sync_group)

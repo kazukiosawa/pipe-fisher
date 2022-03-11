@@ -13,7 +13,7 @@ import torch.distributed as dist
 
 from transformers import BertTokenizer, BertConfig
 
-from pipeline import PipelineStage, PIPELINE_1F1B, PIPELINE_GPIPE, PIPELINE_CHIMERA, PIPELINE_GPIPE_NGD, PIPELINE_GPIPE_NGD_SAVE
+from pipeline import PipelineStage, PIPELINE_1F1B, PIPELINE_GPIPE, PIPELINE_CHIMERA, PIPELINE_GPIPE_NGD
 from utils import init_dist_process_group
 from bert_optim import BertAdam
 from bert_dataset import BERTDataset
@@ -56,7 +56,7 @@ parser.add_argument("--weight_decay", type=float, default=0.01)
 parser.add_argument("--warmup_proportion", default=0.1, type=float,
                     help="Proportion of training to perform linear learning rate warmup for.")
 # Pipeline
-parser.add_argument('--pipeline_method', choices=[PIPELINE_1F1B, PIPELINE_GPIPE, PIPELINE_CHIMERA, PIPELINE_GPIPE_NGD, PIPELINE_GPIPE_NGD_SAVE], default=PIPELINE_1F1B)
+parser.add_argument('--pipeline_method', choices=[PIPELINE_1F1B, PIPELINE_GPIPE, PIPELINE_CHIMERA, PIPELINE_GPIPE_NGD], default=PIPELINE_1F1B)
 parser.add_argument('--recompute', action='store_true',
                     help='Recompute activations in backward pass')
 parser.add_argument('--num_stages', type=int, default=4,
@@ -265,7 +265,7 @@ if __name__ == "__main__":
         optimizers.append(get_optimizer(stage.up_pipe_stage.stage_module))
 
     ngd = None
-    if args.pipeline_method in [PIPELINE_GPIPE_NGD, PIPELINE_GPIPE_NGD_SAVE]:
+    if args.pipeline_method in [PIPELINE_GPIPE_NGD]:
         ngd = asdl.EmpiricalNaturalGradient(stage.stage_module,
                                             fisher_shape=[(nn.Linear, asdl.SHAPE_KRON),
                                                           (nn.LayerNorm, asdl.SHAPE_UNIT_WISE)],
