@@ -150,6 +150,7 @@ def get_kernel_timeline(main_event_text, sub_event_texts, main_event_indices=Non
 def main():
     if args.event_texts is None:
         event_texts = get_all_event_texts()
+        event_texts = [t for t in event_texts if t is not None]
         if args.event_keywords is not None:
             event_keywords = args.event_keywords.split(',')
             event_texts = [txt for txt in event_texts
