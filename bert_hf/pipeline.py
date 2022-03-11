@@ -220,7 +220,8 @@ class PipelineStage:
         # pop inputs/outputs from the queue
         inputs, outputs = self.input_output_queue.popleft()
         if self.recompute:
-            outputs = self.stage_module(**inputs)
+            with nvtx.range('recompute'):
+                outputs = self.stage_module(**inputs)
 
         out_tensors = tuple(outputs.values())
         grad_tensors = None
