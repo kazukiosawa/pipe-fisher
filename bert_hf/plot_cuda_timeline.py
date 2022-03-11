@@ -9,9 +9,6 @@ matplotlib.rcParams.update({'font.size': 20})
 import matplotlib.pyplot as plt
 from matplotlib.collections import PolyCollection
 
-#import seaborn as sns
-#sns.set_theme(style="white")
-#sns.set(font_scale=2)
 
 key_to_color_label = OrderedDict(
     {
