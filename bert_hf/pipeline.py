@@ -20,7 +20,6 @@ import threadsafe_queue
 PIPELINE_1F1B = '1f1b'
 PIPELINE_GPIPE = 'gpipe'
 PIPELINE_GPIPE_NGD = 'gpipe_ngd'
-PIPELINE_GPIPE_NGD_SAVE = 'gpipe_ngd_save'
 PIPELINE_CHIMERA = 'chimera'
 
 
@@ -304,9 +303,6 @@ class PipelineStage:
         elif pipeline_method == PIPELINE_GPIPE_NGD:
             _call_pipeline = self._call_gpipe_pipeline_ngd
             kwargs['ngd'] = ngd
-        elif pipeline_method == PIPELINE_GPIPE_NGD_SAVE:
-            _call_pipeline = self._call_gpipe_pipeline_ngd_save
-            kwargs['ngd'] = ngd
             kwargs['iteration'] = iteration
         elif pipeline_method == PIPELINE_CHIMERA:
             _call_pipeline = self._call_chimera_pipeline
@@ -355,53 +351,10 @@ class PipelineStage:
     def _call_gpipe_pipeline_ngd(self,
                                  data_iterator: Iterator,
                                  num_micro_batches,
-                                 ngd: asdl.NaturalGradient):
+                                 ngd: asdl.NaturalGradient,
+                                 iteration):
         """
         GPipe with K-FAC
-        """
-        with asdl.save_inputs_outgrads(self.stage_module) as cxt:
-            for i in range(num_micro_batches):
-                self.call_forward(next(data_iterator))
-                with nvtx.range('update_A'):
-                    ngd.update_curvature(cxt=cxt, accumulate=i > 0)
-
-            if not self.is_last_stage:
-                if self.is_distributed:
-                    ngd.reduce_scatter_fisher('kron', 'A')
-                with nvtx.range('update_A_inv'):
-                    ngd.update_inv(kron_targets=['A'])
-
-            for i in range(num_micro_batches):
-                self.call_backward()
-                with nvtx.range('update_B'):
-                    ngd.accumulate_curvature(cxt=cxt)
-
-        if self.is_distributed:
-            if self.is_last_stage:
-                ngd.reduce_scatter_fisher('kron', 'A')
-            ngd.reduce_scatter_fisher('kron', 'B')
-        if self.is_last_stage:
-            with nvtx.range('update_AB_inv'):
-                ngd.update_inv(kron_targets=['A', 'B'])
-        else:
-            with nvtx.range('update_B_inv'):
-                ngd.update_inv(kron_targets=['B'])
-
-        if self.is_distributed:
-            ngd.reduce_scatter_grad()
-        with nvtx.range('precondition'):
-            ngd.precondition()
-        if self.is_distributed:
-            ngd.all_gather_grad()
-            ngd.all_reduce_no_precondition_grad()
-
-    def _call_gpipe_pipeline_ngd_save(self,
-                                      data_iterator: Iterator,
-                                      num_micro_batches,
-                                      ngd: asdl.NaturalGradient,
-                                      iteration):
-        """
-        GPipe with K-FAC with save
         """
         update_prev_B_inv = self.stage_id in [0, 1] and iteration > 0
 
@@ -412,10 +365,10 @@ class PipelineStage:
             if not self.is_last_stage:
                 ngd.update_curvature(cxt=cxt, accumulate=i > 0)
                 if self.is_distributed:
-                    ngd.reduce_scatter_fisher('kron', 'A')
-                ngd.update_inv(kron_targets=['A'])
+                    ngd.reduce_scatter_curvature('kron', 'A')
+                ngd.update_inv(kron=['A'])
                 if update_prev_B_inv:
-                    ngd.update_inv(kron_targets=['B'])
+                    ngd.update_inv(kron=['B'])
 
             for i in range(num_micro_batches):
                 self.call_backward()
@@ -428,21 +381,20 @@ class PipelineStage:
 
         if self.is_distributed:
             if self.is_last_stage:
-                ngd.reduce_scatter_fisher('kron', 'A')
-            ngd.reduce_scatter_fisher('kron', 'B')
+                ngd.reduce_scatter_curvature('kron', 'A')
+            ngd.reduce_scatter_curvature('kron', 'B', with_grad=True)
+            ngd.all_reduce_undivided_curvature('unit', 'data', with_grad=True)
+
         if self.is_last_stage:
             if iteration == 0 or iteration % 2 == 1:
-                ngd.update_inv(kron_targets=['A', 'B'])
+                ngd.update_inv(kron=['A', 'B'])
         elif not update_prev_B_inv:
-            ngd.update_inv(kron_targets=['B'])
+            ngd.update_inv(kron=['B'])
 
-        if self.is_distributed:
-            ngd.reduce_scatter_grad()
-        with nvtx.range('precondition'):
-            ngd.precondition()
+        ngd.precondition()
         if self.is_distributed:
             ngd.all_gather_grad()
-            ngd.all_reduce_no_precondition_grad()
+            ngd.all_reduce_no_curvature_grad()
 
     def _call_chimera_pipeline(self,
                                data_iterator: Iterator,
