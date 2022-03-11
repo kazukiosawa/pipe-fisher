@@ -360,15 +360,15 @@ class PipelineStage:
         update_prev_B_inv = self.stage_id in [0, 1] and iteration > 0
 
         with asdl.save_inputs_outgrads(self.stage_module, ignore_modules=ngd.ignore_modules) as cxt:
-            for i in range(num_micro_batches):
+            for _ in range(num_micro_batches):
                 self.call_forward(next(data_iterator))
 
             if not self.is_last_stage:
-                ngd.update_curvature(cxt=cxt, accumulate=i > 0)
-                if self.is_distributed:
-                    ngd.reduce_scatter_curvature('kron', 'A')
+                ngd.refresh_curvature(cxt=cxt)
+                ngd.sync_curvature('kron', 'A', enabled=self.is_distributed)
                 ngd.update_inv(kron=['A'])
                 if update_prev_B_inv:
+                    ngd.sync_curvature('kron', 'B', enabled=self.is_distributed)
                     ngd.update_inv(kron=['B'])
 
             for i in range(num_micro_batches):
@@ -378,24 +378,22 @@ class PipelineStage:
                         ngd.accumulate_curvature(cxt=cxt)
             if self.is_last_stage:
                 if iteration % 2 == 0:
-                    ngd.update_curvature(cxt=cxt, accumulate=i > 0)
+                    ngd.refresh_curvature(cxt=cxt, accumulate=i > 0)
 
-        if self.is_distributed:
-            if self.is_last_stage:
-                ngd.reduce_scatter_curvature('kron', 'A')
-            ngd.reduce_scatter_curvature('kron', 'B', with_grad=True)
-            ngd.all_reduce_undivided_curvature('unit', 'data', with_grad=True)
+        ngd.sync_curvature('unit', 'data', enabled=self.is_distributed)
 
         if self.is_last_stage:
             if iteration == 0 or iteration % 2 == 1:
+                ngd.sync_curvature('kron', 'A', enabled=self.is_distributed)
+                ngd.sync_curvature('kron', 'B', enabled=self.is_distributed)
                 ngd.update_inv(kron=['A', 'B'])
         elif not update_prev_B_inv:
+            ngd.sync_curvature('kron', 'B', enabled=self.is_distributed)
             ngd.update_inv(kron=['B'])
 
+        ngd.sync_grad_pre_precondition(self.is_distributed)
         ngd.precondition()
-        if self.is_distributed:
-            ngd.all_gather_grad()
-            ngd.all_reduce_no_curvature_grad()
+        ngd.sync_grad_post_precondition(self.is_distributed)
 
     def _call_chimera_pipeline(self,
                                data_iterator: Iterator,
