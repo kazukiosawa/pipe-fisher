@@ -10,6 +10,7 @@ from torch import nn
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 import torch.distributed as dist
+from torch.cuda import nvtx
 
 from transformers import BertTokenizer, BertConfig, BertLayer
 
@@ -70,6 +71,7 @@ parser.add_argument('--p2p_backend', default=dist.Backend.GLOO, type=str)
 parser.add_argument('--collective_backend', default=dist.Backend.NCCL, type=str)
 parser.add_argument('--num_workers', default=4, type=int)
 parser.add_argument('--profile', action='store_true')
+parser.add_argument('--record_ngd', action='store_true')
 parser.add_argument('--log_interval', type=int, default=100)
 
 
@@ -112,18 +114,10 @@ def train_one_epoch(epoch, step, num_steps_for_this_epoch):
     train_iterator_for_up_pipe = iter(train_loader_for_up_pipe) if dual_pipelines else None
 
     for i in range(num_steps_for_this_epoch):
-        for optimizer in optimizers:
-            optimizer.zero_grad()
-
-        loss = stage.call_pipeline(train_iterator,
-                                   num_micro_batches=num_micro_batches_per_step,
-                                   data_iterator_for_up_pipe=train_iterator_for_up_pipe,
-                                   ngd=ngd,
-                                   iteration=i)
-
-        for optimizer in optimizers:
-            optimizer.step()
-
+        if args.record_ngd:
+            loss = train_one_ngd_step(train_iterator, train_iterator_for_up_pipe)
+        else:
+            loss = train_one_step(train_iterator, train_iterator_for_up_pipe)
         if i % args.log_interval == 0:
             loss = torch.tensor(loss, device=stage.device)
             dist.reduce(loss, dst=0)
@@ -132,6 +126,41 @@ def train_one_epoch(epoch, step, num_steps_for_this_epoch):
                 loss *= 2
             if is_master:
                 print(f'epoch{epoch+1} step{step+i+1} loss = {float(loss)}')
+
+
+def train_one_step(train_iterator, train_iterator_for_up_pipe=None):
+    for optimizer in optimizers:
+        optimizer.zero_grad()
+    loss = stage.call_pipeline(train_iterator,
+                               num_micro_batches=num_micro_batches_per_step,
+                               data_iterator_for_up_pipe=train_iterator_for_up_pipe,
+                               ngd=ngd,
+                               iteration=i)
+    for optimizer in optimizers:
+        optimizer.step()
+    return loss
+
+
+@nvtx.range('one_ngd_step')
+def train_one_ngd_step(train_iterator, train_iterator_for_up_pipe=None):
+    is_distributed = num_replicas > 1
+    for optimizer in optimizers:
+        optimizer.zero_grad()
+    with asdl.save_inputs_outgrads(stage.stage_module, ignore_modules=ngd.ignore_modules) as cxt:
+        loss = stage.call_pipeline(train_iterator,
+                                   num_micro_batches=num_micro_batches_per_step,
+                                   data_iterator_for_up_pipe=train_iterator_for_up_pipe)
+        ngd.accumulate_curvature(cxt=cxt)
+        ngd.sync_curvature('kron', 'A', enabled=is_distributed)
+        ngd.sync_curvature('kron', 'B', enabled=is_distributed)
+        ngd.sync_curvature('unit', 'data', enabled=is_distributed)
+        ngd.update_inv()
+        ngd.sync_grad_pre_precondition(enabled=is_distributed)
+        ngd.precondition()
+        ngd.sync_grad_post_precondition(enabled=is_distributed)
+    for optimizer in optimizers:
+        optimizer.step()
+    return loss
 
 
 if __name__ == "__main__":
@@ -265,7 +294,7 @@ if __name__ == "__main__":
         optimizers.append(get_optimizer(stage.up_pipe_stage.stage_module))
 
     ngd = ngd_for_up_pipe = None
-    if args.pipeline_method in [PIPELINE_GPIPE_NGD]:
+    if args.record_ngd:
         module_partitions = None
         if num_replicas > 1:
             bert_layers = [m for m in stage.stage_module.modules() if isinstance(m, BertLayer)]
