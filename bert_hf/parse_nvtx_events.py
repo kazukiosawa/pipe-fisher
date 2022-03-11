@@ -108,7 +108,7 @@ def get_stats(event_texts):
 
     df = pd.DataFrame(times, index=index)
     print(df)
-    pickle_path = args.pickle_path
+    pickle_path = args.pickle_path_stats
     print(f'Writing results to "{pickle_path}"')
     df.to_pickle(pickle_path)
 
