@@ -119,7 +119,11 @@ def train_one_epoch(epoch, step, num_steps_for_this_epoch):
         if args.record_ngd:
             loss = train_one_ngd_step(train_iterator, train_iterator_for_up_pipe)
         else:
-            loss = train_one_step(train_iterator, train_iterator_for_up_pipe)
+            loss = stage.call_pipeline(train_iterator,
+                                       num_micro_batches=num_micro_batches_per_step,
+                                       data_iterator_for_up_pipe=train_iterator_for_up_pipe,
+                                       ngd=ngd,
+                                       iteration=i)
         for optimizer in optimizers:
             optimizer.step()
         if i % args.log_interval == 0:
@@ -132,18 +136,8 @@ def train_one_epoch(epoch, step, num_steps_for_this_epoch):
                 print(f'epoch{epoch+1} step{step+i+1} loss = {float(loss)}')
 
 
-def train_one_step(train_iterator, train_iterator_for_up_pipe=None):
-    loss = stage.call_pipeline(train_iterator,
-                               num_micro_batches=num_micro_batches_per_step,
-                               data_iterator_for_up_pipe=train_iterator_for_up_pipe,
-                               ngd=ngd,
-                               iteration=i)
-    return loss
-
-
 @nvtx.range('one_ngd_step')
 def train_one_ngd_step(train_iterator, train_iterator_for_up_pipe=None):
-    is_distributed = num_replicas > 1
     with asdl.save_inputs_outgrads(stage.stage_module, ignore_modules=ngd.ignore_modules) as cxt:
         loss = stage.call_pipeline(train_iterator,
                                    num_micro_batches=num_micro_batches_per_step,
@@ -185,6 +179,7 @@ if __name__ == "__main__":
     dual_pipelines = args.pipeline_method == PIPELINE_CHIMERA
     if dual_pipelines:
         num_replicas *= 2
+    is_distributed = num_replicas > 1
 
     def rank_to_stage(_rank, down_pipe=True):
         if down_pipe:
