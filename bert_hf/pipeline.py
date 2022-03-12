@@ -378,7 +378,7 @@ class PipelineStage:
                         ngd.accumulate_curvature(cxt=cxt)
             if self.is_last_stage:
                 if iteration % 2 == 0:
-                    ngd.refresh_curvature(cxt=cxt, accumulate=i > 0)
+                    ngd.refresh_curvature(cxt=cxt)
 
         ngd.sync_curvature('unit', 'data', enabled=self.is_distributed)
 
