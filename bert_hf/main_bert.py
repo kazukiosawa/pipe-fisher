@@ -310,7 +310,7 @@ if __name__ == "__main__":
                                             fisher_shape=[(nn.Linear, asdl.SHAPE_KRON),
                                                           (nn.LayerNorm, asdl.SHAPE_UNIT_WISE)],
                                             damping=1e-2,
-                                            ignore_modules=['cls.'],
+                                            ignore_modules=['cls.', nn.LayerNorm, nn.Embedding],
                                             sync_group=grad_sync_groups[rank_to_stage(rank)],
                                             module_partitions=module_partitions)
 
