@@ -156,7 +156,10 @@ def main():
         get_stats(event_texts, args.pickle_path_stats)
 
     if args.pickle_path_timeline is not None:
-        main_event_indices = [int(s) for s in args.main_event_indices.split(',')]
+        if args.main_event_indices is not None:
+            main_event_indices = [int(s) for s in args.main_event_indices.split(',')]
+        else:
+            main_event_indices = []
         get_kernel_timeline(args.main_event_text, event_texts, args.pickle_path_timeline, main_event_indices)
 
 
