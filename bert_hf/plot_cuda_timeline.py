@@ -57,7 +57,7 @@ def main():
     for idx, timeline in enumerate(timelines):
         y = len(timelines) - idx - 1
         for i, key in enumerate(timeline):
-            if key not in key_to_color_label:
+            if not any(_key in key for _key in key_to_color_label):
                 continue
             used_keys.add(key)
             start_end_list = timeline[key]
@@ -65,7 +65,7 @@ def main():
                 s = time_shift(s)
                 e = time_shift(e)
                 v = [(s, y-width/2), (s, y+width/2), (e, y+width/2), (e, y-width/2), (s, y-width/2)]
-                color, label = key_to_color_label[key]
+                color, label = next(key_to_color_label[_key] for _key in key_to_color_label if _key in key)
                 if 'sync' in key:
                     verts_alpha.append(v)
                     colors_alpha.append(color)
