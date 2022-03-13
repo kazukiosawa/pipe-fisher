@@ -56,16 +56,17 @@ def main():
     width = .95
     for idx, timeline in enumerate(timelines):
         y = len(timelines) - idx - 1
-        for i, key in enumerate(timeline):
-            if not any(_key in key for _key in key_to_color_label):
+        for i, event_txt in enumerate(timeline):
+            if not any(key in event_txt for key in key_to_color_label):
                 continue
+            key = next(key for key in key_to_color_label if key in event_txt)
             used_keys.add(key)
-            start_end_list = timeline[key]
+            start_end_list = timeline[event_txt]
             for s, e in start_end_list:
                 s = time_shift(s)
                 e = time_shift(e)
                 v = [(s, y-width/2), (s, y+width/2), (e, y+width/2), (e, y-width/2), (s, y-width/2)]
-                color, label = next(key_to_color_label[_key] for _key in key_to_color_label if _key in key)
+                color, label = key_to_color_label[key]
                 if 'sync' in key:
                     verts_alpha.append(v)
                     colors_alpha.append(color)
