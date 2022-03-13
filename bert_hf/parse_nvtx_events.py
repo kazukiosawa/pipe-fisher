@@ -79,7 +79,7 @@ def get_sync_time_in_event(event_start, event_end):
     return get_total_time_in_event('CUPTI_ACTIVITY_KIND_SYNCHRONIZATION', event_start, event_end)
 
 
-def get_stats(event_texts):
+def get_stats(event_texts, pickle_path):
     times = {'ncalls': []}
     for key in ['runtime', 'kernel', 'memset', 'memcpy', 'sync']:
         times[key] = []
@@ -108,20 +108,11 @@ def get_stats(event_texts):
 
     df = pd.DataFrame(times, index=index)
     print(df)
-    pickle_path = args.pickle_path_stats
     print(f'Writing results to "{pickle_path}"')
     df.to_pickle(pickle_path)
 
-    if args.wandb_run_path is not None:
-        data = df.to_dict('index')
-        import wandb
-        run = wandb.Api().run(args.wandb_run_path)
-        run.summary['times'] = 0
-        run.summary['times'] = {key: 0 for key in data}
-        run.summary.update({'times': data})
 
-
-def get_kernel_timeline(main_event_text, sub_event_texts, main_event_indices=None):
+def get_kernel_timeline(main_event_text, sub_event_texts, pickle_path, main_event_indices=None):
     main_event_start_end = get_event_start_end(main_event_text)
     assert len(main_event_start_end) > 0, f'event {main_event_text} does not exist.'
     if main_event_indices is None:
@@ -143,7 +134,6 @@ def get_kernel_timeline(main_event_text, sub_event_texts, main_event_indices=Non
                 timeline[txt].append(get_kernel_start_end_in_event(s, e))
         print(txt, len(timeline[txt]))
 
-    pickle_path = args.pickle_path_timeline
     print(f'Writing results to "{pickle_path}"')
     with open(pickle_path, 'wb') as f:
         pickle.dump(timeline, f)
@@ -162,21 +152,22 @@ def main():
         if args.event_keywords is not None:
             warnings.warn('As event_texts is specified, event_keywords will be ignored.')
 
-    get_stats(event_texts)
+    if args.pickle_path_stats is not None:
+        get_stats(event_texts, args.pickle_path_stats)
 
-    main_event_indices = [int(s) for s in args.main_event_indices.split(',')]
-    get_kernel_timeline(args.main_event_text, event_texts, main_event_indices)
+    if args.pickle_path_timeline is not None:
+        main_event_indices = [int(s) for s in args.main_event_indices.split(',')]
+        get_kernel_timeline(args.main_event_text, event_texts, args.pickle_path_timeline, main_event_indices)
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('sqlite_path', type=str)
-    parser.add_argument('--pickle_path_stats', type=str, default='stats.pickle')
-    parser.add_argument('--pickle_path_timeline', type=str, default='timeline.pickle')
+    parser.add_argument('--pickle_path_stats', type=str, default=None)
+    parser.add_argument('--pickle_path_timeline', type=str, default=None)
     parser.add_argument('--ignore_first_event', action='store_true')
     parser.add_argument('--event_texts', type=str)
     parser.add_argument('--event_keywords', type=str)
-    parser.add_argument('--wandb_run_path', type=str, default=None)
     parser.add_argument('--main_event_indices', type=str, default=None)
     parser.add_argument('--main_event_text', type=str)
     args = parser.parse_args()
