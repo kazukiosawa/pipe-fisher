@@ -3,6 +3,7 @@ import os
 import random
 import math
 import logging
+import pickle
 
 import numpy as np
 import torch
@@ -72,6 +73,7 @@ parser.add_argument('--collective_backend', default=dist.Backend.NCCL, type=str)
 parser.add_argument('--num_workers', default=4, type=int)
 parser.add_argument('--profile', action='store_true')
 parser.add_argument('--record_ngd', action='store_true')
+parser.add_argument('--schedule_path', type=str, default=None)
 parser.add_argument('--log_interval', type=int, default=100)
 
 
@@ -113,11 +115,33 @@ def train_one_epoch(epoch, step, num_steps_for_this_epoch):
     train_iterator = iter(train_loader)
     train_iterator_for_up_pipe = iter(train_loader_for_up_pipe) if dual_pipelines else None
 
+    if schedule is not None:
+        for optimizer in optimizers:
+            optimizer.zero_grad()
+        loss = call_one_ngd_step(train_iterator, train_iterator_for_up_pipe=train_iterator_for_up_pipe)
+        for optimizer in optimizers:
+            optimizer.step()
+        dist.barrier()
+        loss += stage.call_scheduled_pipeline(schedule,
+                                              num_pipeline_iterations=num_steps_for_this_epoch - 1,
+                                              optimizers=optimizers,
+                                              data_iterator=train_iterator,
+                                              data_iterator_for_up_pipe=train_iterator_for_up_pipe,
+                                              ngd=ngd)
+        loss = torch.tensor(loss, device=stage.device)
+        dist.reduce(loss, dst=0)
+        loss /= total_num_micro_batches_per_step * num_steps_for_this_epoch
+        if dual_pipelines:
+            loss *= 2
+        if is_master:
+            print(f'epoch{epoch+1} loss = {float(loss)}')
+        return
+
     for i in range(num_steps_for_this_epoch):
         for optimizer in optimizers:
             optimizer.zero_grad()
         if args.record_ngd:
-            loss = train_one_ngd_step(train_iterator, train_iterator_for_up_pipe)
+            loss = call_one_ngd_step(train_iterator, train_iterator_for_up_pipe)
         else:
             loss = stage.call_pipeline(train_iterator,
                                        num_micro_batches=num_micro_batches_per_step,
@@ -137,7 +161,7 @@ def train_one_epoch(epoch, step, num_steps_for_this_epoch):
 
 
 @nvtx.range('one_ngd_step')
-def train_one_ngd_step(train_iterator, train_iterator_for_up_pipe=None):
+def call_one_ngd_step(train_iterator, train_iterator_for_up_pipe=None):
     with asdl.save_inputs_outgrads(stage.stage_module, ignore_modules=ngd.ignore_modules) as cxt:
         loss = stage.call_pipeline(train_iterator,
                                    num_micro_batches=num_micro_batches_per_step,
@@ -146,7 +170,7 @@ def train_one_ngd_step(train_iterator, train_iterator_for_up_pipe=None):
         ngd.sync_curvature('kron', 'A', enabled=is_distributed)
         ngd.sync_curvature('kron', 'B', enabled=is_distributed)
         ngd.sync_curvature('unit', 'data', enabled=is_distributed)
-        ngd.update_inv()
+        ngd.update_inv(zero_curvature=True)
         ngd.sync_grad_pre_precondition(enabled=is_distributed)
         ngd.precondition()
         ngd.sync_grad_post_precondition(enabled=is_distributed)
@@ -284,8 +308,15 @@ if __name__ == "__main__":
     if dual_pipelines:
         optimizers.append(get_optimizer(stage.up_pipe_stage.stage_module))
 
+    schedule = None
+    if args.schedule_path is not None:
+        with open(args.schedule_path, 'rb') as f:
+            schedules = pickle.load(f)
+        assert len(schedules) == world_size
+        schedule = schedules[rank]
+
     ngd = ngd_for_up_pipe = None
-    if args.record_ngd:
+    if args.record_ngd or schedule is not None:
         module_partitions = None
         if num_replicas > 1:
             bert_layers = [m for m in stage.stage_module.modules() if isinstance(m, BertLayer)]
@@ -303,7 +334,8 @@ if __name__ == "__main__":
                                             damping=1e-2,
                                             ignore_modules=['cls.', nn.LayerNorm, nn.Embedding],
                                             sync_group=grad_sync_groups[rank_to_stage(rank)],
-                                            module_partitions=module_partitions)
+                                            module_partitions=module_partitions,
+                                            record_mode=args.record_ngd)
 
     dist.barrier()
     if is_master:

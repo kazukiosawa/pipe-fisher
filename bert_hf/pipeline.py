@@ -2,6 +2,7 @@ import collections
 from collections import deque
 from typing import List, Tuple, Deque, OrderedDict, Iterator, Union, Dict
 from contextlib import nullcontext
+import math
 
 import torch
 from torch import Tensor
@@ -15,6 +16,7 @@ import asdfghjkl as asdl
 
 import threading
 import threadsafe_queue
+import auto_schedule
 
 
 PIPELINE_1F1B = '1f1b'
@@ -314,6 +316,62 @@ class PipelineStage:
         self.total_loss = 0.
         self.assert_intermediate_queues_are_empty()
         _call_pipeline(**kwargs)
+        self.assert_intermediate_queues_are_empty()
+        return self.total_loss
+
+    def call_scheduled_pipeline(self,
+                                schedule: List[str],
+                                num_pipeline_iterations,
+                                data_iterator,
+                                ngd: asdl.NaturalGradient,
+                                optimizers: List[torch.optim.Optimizer],
+                                data_iterator_for_up_pipe=None):
+        self.total_loss = 0.
+        self.assert_intermediate_queues_are_empty()
+        num_pipeline_iterations_in_schedule = sum(map(lambda x: x == auto_schedule.PIPELINE_START, schedule))
+        num_calls = math.ceil(num_pipeline_iterations / num_pipeline_iterations_in_schedule)
+
+        with asdl.save_inputs_outgrads(self.stage_module, ignore_modules=ngd.ignore_modules) as cxt:
+            for _ in range(num_calls):
+                for label in schedule:
+                    if label == auto_schedule.PIPELINE_START:
+                        nvtx.range_push('call_pipeline')
+                        for optimizer in optimizers:
+                            optimizer.zero_grad()
+                    elif label == auto_schedule.FORWARD:
+                        self.call_forward(next(data_iterator))
+                    elif label == auto_schedule.BACKWARD:
+                        self.call_backward()
+                    elif auto_schedule.COV_KRON_A in label:
+                        module_name = label.replace(f'{auto_schedule.COV_KRON_A}_', '')
+                        ngd.accumulate_curvature(cxt=cxt, module_name=module_name, kron=['A'], num_batches=1,
+                                                 no_save=True)
+                    elif auto_schedule.COV_KRON_B in label:
+                        module_name = label.replace(f'{auto_schedule.COV_KRON_B}_', '')
+                        ngd.accumulate_curvature(cxt=cxt, module_name=module_name, kron=['B'], num_batches=1,
+                                                 no_save=True)
+                    elif auto_schedule.INV_KRON_A in label:
+                        module_name = label.replace(f'{auto_schedule.INV_KRON_A}_', '')
+                        ngd.save_curvature(cxt, module_name=module_name)
+                        ngd.sync_curvature(module_name=module_name, kron=['A'], enabled=self.is_distributed)
+                        ngd.update_inv(module_name=module_name, kron=['A'], zero_curvature=True)
+                    elif auto_schedule.INV_KRON_B in label:
+                        module_name = label.replace(f'{auto_schedule.INV_KRON_B}_', '')
+                        ngd.save_curvature(cxt, module_name=module_name)
+                        ngd.sync_curvature(module_name=module_name, kron=['B'], enabled=self.is_distributed)
+                        ngd.update_inv(module_name=module_name, kron=['B'], zero_curvature=True)
+                    elif label == auto_schedule.PIPELINE_END:
+                        ngd.sync_grad_pre_precondition(self.is_distributed)
+                        ngd.precondition()
+                        ngd.sync_grad_post_precondition(self.is_distributed)
+                        for optimizer in optimizers:
+                            optimizer.step()
+                        nvtx.range_pop()
+                    elif label == auto_schedule.TURN_OFF_SAVE:
+                        cxt.turn_off_save_inputs_outgrads()
+                    elif label == auto_schedule.TURN_ON_SAVE:
+                        cxt.turn_on_save_inputs_outgrads()
+
         self.assert_intermediate_queues_are_empty()
         return self.total_loss
 
