@@ -22,13 +22,13 @@ key_to_color_label = OrderedDict(
         'inv_unit_wise': ('C4', None),
         'sync_grad': ('C7', 'sync-grad'),
         'nb_sync_grad': ('C7', 'sync-grad'),
-        'reduce_scatter_curvature': ('C9', 'sync-curvature'),
-        'all_reduce_undivided_curvature': ('C9', None),
         'reduce_scatter_grad': ('C7', 'sync-grad'),
         'all_reduce_undivided_grad': ('C7', None),
-        'precondition': ('C8', 'precondition'),
         'all_gather_grad': ('C7', None),
         'all_reduce_no_curvature_grad': ('C7', None),
+        'reduce_scatter_curvature': ('C9', 'sync-curvature'),
+        'all_reduce_undivided_curvature': ('C9', None),
+        'precondition': ('C8', 'precondition'),
     }
 )
 
@@ -67,7 +67,7 @@ def main():
                 e = time_shift(e)
                 v = [(s, y-width/2), (s, y+width/2), (e, y+width/2), (e, y-width/2), (s, y-width/2)]
                 color, label = key_to_color_label[key]
-                if 'sync' in key:
+                if any(keyword in key for keyword in ['sync', 'reduce', 'gather']):
                     verts_alpha.append(v)
                     colors_alpha.append(color)
                 else:
@@ -90,7 +90,7 @@ def main():
         ax.axvline(time_shift(start), color='r', lw=7, label='flush @ GPU0' if i == 0 else None)
     for key, (color, label) in key_to_color_label.items():
         if key in used_keys:
-            if 'sync' in key:
+            if any(keyword in key for keyword in ['sync', 'reduce', 'gather']):
                 ax.bar(0, 0, label=label, color=color, alpha=0.5, hatch='//')
             else:
                 ax.bar(0, 0, label=label, color=color)
