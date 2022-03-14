@@ -16,9 +16,12 @@ NB_SYNC_GRAD = 'nb_sync_grad'
 SYNC_CURVATURE = 'sync_curvature'
 SYNC_GRAD_PRE_PRECOND = 'sync_grad_pre_precondition'
 SYNC_GRAD_POST_PRECOND = 'sync_grad_post_precondition'
+WAIT_ALL = 'wait_all'
 BUBBLE = 'bubble'
 TURN_ON_SAVE = 'turn_on_save_inputs_outgrads'
 TURN_OFF_SAVE = 'turn_off_save_inputs_outgrads'
+
+TAG_UP_PIPE = ':up_pipe'
 
 
 pipeline_events = [FORWARD, BACKWARD]
@@ -121,12 +124,17 @@ def assign_workloads_to_one_pipeline(workloads, one_pipeline_workloads, fwd_coun
 def main():
     # get start and end time by the timeline of the node 0
     base_time = timelines[0]['call_forward'][0][0]
+    if 'call_forward' + TAG_UP_PIPE in timelines[0]:
+        base_time = min(base_time, timelines[0]['call_forward' + TAG_UP_PIPE][0][0])
 
     def time_shift(t):
         return t - base_time
 
     start_time = 0
-    end_time = time_shift(timelines[0]['call_backward'][-1][-1])
+    end_time = timelines[0]['call_backward'][-1][-1]
+    if 'call_backward' + TAG_UP_PIPE in timelines[0]:
+        end_time = max(end_time, timelines[0]['call_backward' + TAG_UP_PIPE][-1][-1])
+    end_time = time_shift(end_time)
     pipeline_time = end_time - start_time
 
     schedules = []
