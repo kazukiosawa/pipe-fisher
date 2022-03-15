@@ -182,15 +182,15 @@ def main():
             if is_first_pipeline:
                 one_pipeline_workloads = first_pipeline_schedule
             else:
-                schedule.append(Workload(TURN_OFF_SAVE, schedule[-1].end, schedule[-1].end))
                 one_pipeline_workloads = pipeline_workloads.copy()
             schedule += assign_workloads_to_one_pipeline(remaining_workloads,
                                                          one_pipeline_workloads,
                                                          fwd_count=num_micro_batches,
                                                          bwd_count=num_micro_batches)
-            if not is_first_pipeline:
-                schedule.append(Workload(TURN_ON_SAVE, schedule[-1].end, schedule[-1].end))
+            if is_first_pipeline:
+                schedule.append(Workload(TURN_OFF_SAVE, schedule[-1].end, schedule[-1].end))
             is_first_pipeline = False
+        schedule.append(Workload(TURN_ON_SAVE, schedule[-1].end, schedule[-1].end))
 
         if args.print_workloads:
             last_workload = schedule[0]
