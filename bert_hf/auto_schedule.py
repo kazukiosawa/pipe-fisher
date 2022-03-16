@@ -1,6 +1,7 @@
 import argparse
 import pickle
 import math
+import copy
 
 
 PIPELINE_START = '-- start --'
@@ -11,6 +12,8 @@ COV_KRON_A = 'cov_kron_A'
 COV_KRON_B = 'cov_kron_B'
 INV_KRON_A = 'inv_kron_A'
 INV_KRON_B = 'inv_kron_B'
+SYNC_KRON_A = 'sync_kron_A'
+SYNC_KRON_B = 'sync_kron_B'
 SYNC_GRAD = 'sync_grad'
 NB_SYNC_GRAD = 'nb_sync_grad'
 SYNC_CURVATURE = 'sync_curvature'
@@ -26,7 +29,7 @@ TAG_UP_PIPE = ':up_pipe'
 
 pipeline_events = [FORWARD, BACKWARD]
 cov_events = [COV_KRON_A, COV_KRON_B]
-inv_events = [INV_KRON_A, INV_KRON_B]
+ngd_events = [COV_KRON_A, COV_KRON_B, SYNC_KRON_A, SYNC_KRON_B, INV_KRON_A, INV_KRON_B]
 
 
 class Workload:
@@ -74,23 +77,23 @@ class WorkloadQueue(Workload):
         return len(self.queue)
 
 
-def assign_workloads_to_one_pipeline(workloads, one_pipeline_workloads, fwd_count=0, bwd_count=0):
-    schedule = []
-    last_workload = one_pipeline_workloads.pop(0)
-    schedule.append(last_workload)
-    while len(one_pipeline_workloads) > 0:
+def assign_workloads_to_bubbles(workloads, schedule, fwd_count=0, bwd_count=0, margin_ratio=.1):
+    new_schedule = []
+    last_workload = schedule.pop(0)
+    new_schedule.append(last_workload)
+    while len(schedule) > 0:
         if last_workload.label == FORWARD:
             fwd_count += 1
         elif last_workload.label == BACKWARD:
             bwd_count += 1
-        next_workload = one_pipeline_workloads.pop(0)
+        next_workload = schedule.pop(0)
         bubble_start = last_workload.end
         bubble_end = next_workload.start
         while True:
-            num_workloads_before = len(schedule)
+            num_workloads_before = len(new_schedule)
             for workload in workloads:
                 if isinstance(workload, WorkloadQueue):
-                    while bubble_start + workload.avg_duration < bubble_end:
+                    while bubble_start + workload.avg_duration * (1 + margin_ratio) < bubble_end:
                         if COV_KRON_A in workload.label and (fwd_count < workload.next_workload_id + 1):
                             break
                         elif COV_KRON_B in workload.label and (bwd_count < workload.next_workload_id + 1):
@@ -98,27 +101,31 @@ def assign_workloads_to_one_pipeline(workloads, one_pipeline_workloads, fwd_coun
                         sub_workload = workload.pop()
                         sub_workload.end = bubble_start + sub_workload.duration
                         sub_workload.start = bubble_start
-                        schedule.append(sub_workload)
+                        new_schedule.append(sub_workload)
                         bubble_start += sub_workload.duration
                         if len(workload) == 0:
                             workloads.remove(workload)
                             break
-                elif bubble_start + workload.duration < bubble_end:
-                    if INV_KRON_A in workload.label and any(COV_KRON_A in w.label for w in workloads):
+                elif bubble_start + workload.duration * (1 + margin_ratio) < bubble_end:
+                    if SYNC_KRON_A in workload.label and any(COV_KRON_A in w.label for w in workloads):
                         continue
-                    elif INV_KRON_B in workload.label and any(COV_KRON_B in w.label for w in workloads):
+                    elif SYNC_KRON_B in workload.label and any(COV_KRON_B in w.label for w in workloads):
+                        continue
+                    elif INV_KRON_A in workload.label and any(COV_KRON_A in w.label or SYNC_KRON_A in w.label for w in workloads):
+                        continue
+                    elif INV_KRON_B in workload.label and any(COV_KRON_B in w.label or SYNC_KRON_B in w.label for w in workloads):
                         continue
                     workload.end = bubble_start + workload.duration
                     workload.start = bubble_start
-                    schedule.append(workload)
+                    new_schedule.append(workload)
                     bubble_start += workload.duration
                     workloads.remove(workload)
-            if len(schedule) == num_workloads_before:
+            if len(new_schedule) == num_workloads_before:
                 # loop until no workload is added
                 break
-        schedule.append(next_workload)
+        new_schedule.append(next_workload)
         last_workload = next_workload
-    return schedule
+    return new_schedule
 
 
 def main():
@@ -150,47 +157,52 @@ def main():
         num_micro_batches = sum(map(lambda x: x.label == FORWARD, pipeline_workloads))
         assert num_micro_batches == sum(map(lambda x: x.label == BACKWARD, pipeline_workloads))
 
-        cov_workload_queues = []
-        for i, event in enumerate(cov_events):
+        ngd_workloads = []
+        for i, event in enumerate(ngd_events):
             for key in timeline:
                 if event not in key:
                     continue
-                for s, e in timeline[key]:
-                    cov_workload_queues.append(WorkloadQueue(key, time_shift(s), time_shift(e), num_micro_batches, priority=i))
-        cov_workload_queues.sort(key=lambda x: x.start)
-        cov_workload_queues.sort(key=lambda x: x.priority)
+                if event in cov_events:
+                    for s, e in timeline[key]:
+                        ngd_workloads.append(WorkloadQueue(key, time_shift(s), time_shift(e), num_micro_batches, priority=i))
+                else:
+                    for s, e in timeline[key]:
+                        ngd_workloads.append(Workload(key, time_shift(s), time_shift(e), priority=i))
+        ngd_workloads.sort(key=lambda x: x.start)
+        ngd_workloads.sort(key=lambda x: x.priority)
 
-        # assign as many cov workloads as possible to the 1st pipeline
-        first_pipeline_schedule = assign_workloads_to_one_pipeline(cov_workload_queues, pipeline_workloads.copy())
+        # assign as many workloads as possible to the 1st pipeline
+        schedule = assign_workloads_to_bubbles(ngd_workloads, pipeline_workloads.copy())
+        schedule.append(Workload(TURN_OFF_SAVE, schedule[-1].end, schedule[-1].end))
 
-        inv_workloads = []
-        for i, event in enumerate(inv_events):
-            for key in timeline:
-                if event not in key:
-                    continue
-                for s, e in timeline[key]:
-                    inv_workloads.append(Workload(key, time_shift(s), time_shift(e), priority=i))
-        inv_workloads.sort(key=lambda x: x.start)
-        inv_workloads.sort(key=lambda x: x.priority)
+        # assign all remaining workloads to the 1st and extra pipelines
+        while len(ngd_workloads) > 0:
+            remaining_workloads = copy.deepcopy(ngd_workloads)
+            # try to assign all the remaining workloads to the bubbles in the current schedule
+            new_schedule = assign_workloads_to_bubbles(remaining_workloads,
+                                                       schedule.copy(),
+                                                       fwd_count=num_micro_batches,
+                                                       bwd_count=num_micro_batches)
+            if len(remaining_workloads) == 0:
+                schedule = new_schedule
+                break
 
-        remaining_workloads = cov_workload_queues + inv_workloads
+            # add one pipeline
+            additional_schedule = assign_workloads_to_bubbles(ngd_workloads,
+                                                              pipeline_workloads.copy(),
+                                                              fwd_count=num_micro_batches,
+                                                              bwd_count=num_micro_batches)
+            schedule += additional_schedule
 
-        # assign all remaining workloads (cov and inv) to the 1st and extra pipelines
-        schedule = []
-        is_first_pipeline = True
-        while len(remaining_workloads) > 0:
-            if is_first_pipeline:
-                one_pipeline_workloads = first_pipeline_schedule
-            else:
-                one_pipeline_workloads = pipeline_workloads.copy()
-            schedule += assign_workloads_to_one_pipeline(remaining_workloads,
-                                                         one_pipeline_workloads,
-                                                         fwd_count=num_micro_batches,
-                                                         bwd_count=num_micro_batches)
-            if is_first_pipeline:
-                schedule.append(Workload(TURN_OFF_SAVE, schedule[-1].end, schedule[-1].end))
-            is_first_pipeline = False
         schedule.append(Workload(TURN_ON_SAVE, schedule[-1].end, schedule[-1].end))
+
+        total_time = 0
+        for workload in schedule:
+            total_time += workload.duration
+        num_pipeline_iterations = sum(map(lambda x: x.label == PIPELINE_START, schedule))
+        usage = total_time / (pipeline_time * num_pipeline_iterations) * 100
+        print('*****************')
+        print(f'node{node_id}:{num_pipeline_iterations} pipeline iterations (usage: {usage:.2f} %)')
 
         if args.print_workloads:
             last_workload = schedule[0]
@@ -205,13 +217,6 @@ def main():
             schedule_with_bubbles.append(last_workload)
             for workload in schedule_with_bubbles:
                 print(workload)
-
-        total_time = 0
-        for workload in schedule:
-            total_time += workload.duration
-        num_pipeline_iterations = sum(map(lambda x: x.label == PIPELINE_START, schedule))
-        usage = total_time / (pipeline_time * num_pipeline_iterations) * 100
-        print(f'node{node_id}:{num_pipeline_iterations} pipeline iterations (usage: {usage:.2f} %)')
 
         num_pipeline_iterations_list.append(num_pipeline_iterations)
         schedules.append([workload.label for workload in schedule])
