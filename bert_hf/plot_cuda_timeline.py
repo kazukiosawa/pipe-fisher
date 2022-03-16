@@ -38,11 +38,10 @@ def main():
     gs = fig.add_gridspec(1, 1)
     ax = fig.add_subplot(gs[0, 0])
 
-    min_time = sys.maxsize
+    min_time = timelines[0]['call_forward'][0][0]
     max_time = 0
     for start_end_list in timelines[0].values():
         for s, e in start_end_list:
-            min_time = min(min_time, s)
             max_time = max(max_time, e)
 
     def time_shift(t):
@@ -76,7 +75,7 @@ def main():
 
     bars = PolyCollection(verts, facecolors=colors)
     ax.add_collection(bars)
-    bars = PolyCollection(verts_alpha, facecolors=colors_alpha, alpha=0.5, hatch='//')
+    bars = PolyCollection(verts_alpha, facecolors=colors_alpha, alpha=.5, hatch='//')
     ax.add_collection(bars)
     ax.autoscale()
 
@@ -86,8 +85,11 @@ def main():
     ax.set_title(args.title)
     ax.set_xlim(time_shift(min_time), time_shift(max_time))
 
-    for i, (start, _) in enumerate(timelines[0]['start_end'][1:]):
-        ax.axvline(time_shift(start), color='r', lw=7, label='flush @ GPU0' if i == 0 else None)
+    num_iterations = len(timelines[0]['start_end'])
+    num_forward_per_iteration = len(timelines[0]['call_forward']) // num_iterations
+    for i in range(1, num_iterations):
+        ax.axvline(time_shift(timelines[0]['call_forward'][num_forward_per_iteration * i][0]),
+                   color='r', lw=7, label='flush @ GPU0' if i == 1 else None)
     for key, (color, label) in key_to_color_label.items():
         if key in used_keys:
             if any(keyword in key for keyword in ['sync', 'reduce', 'gather']):
