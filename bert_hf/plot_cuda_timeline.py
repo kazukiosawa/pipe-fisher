@@ -1,6 +1,5 @@
 import argparse
 import pickle
-import sys
 from collections import OrderedDict
 
 import matplotlib
@@ -21,8 +20,8 @@ key_to_color_label = OrderedDict(
         'inv_kron_B': ('C4', None),
         'inv_unit_wise': ('C4', None),
         'sync_grad': ('C7', 'sync-grad'),
-        'nb_sync_grad': ('C7', 'sync-grad'),
-        'reduce_scatter_grad': ('C7', 'sync-grad'),
+        'nb_sync_grad': ('C7', None),
+        'reduce_scatter_grad': ('C7', None),
         'all_reduce_undivided_grad': ('C7', None),
         'all_gather_grad': ('C7', None),
         'all_reduce_no_curvature_grad': ('C7', None),
@@ -62,6 +61,8 @@ def main():
             used_keys.add(key)
             start_end_list = timeline[event_txt]
             for s, e in start_end_list:
+                if s is None or e is None:
+                    continue
                 s = time_shift(s)
                 e = time_shift(e)
                 v = [(s, y-width/2), (s, y+width/2), (e, y+width/2), (e, y-width/2), (s, y-width/2)]
