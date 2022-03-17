@@ -11,23 +11,23 @@ from matplotlib.collections import PolyCollection
 
 key_to_color_label = OrderedDict(
     {
-        'call_forward': ('C0', 'forward'),
-        'call_backward': ('C1', 'backward'),
-        'cov_kron_A': ('C2', 'curvature'),
+        'call_forward': ('C0', 'Forward'),
+        'call_backward': ('C1', 'Backward'),
+        'cov_kron_A': ('C2', 'Curvature'),
         'cov_kron_B': ('C2', None),
         'cov_unit_wise': ('C2', None),
-        'inv_kron_A': ('C4', 'inv'),
+        'inv_kron_A': ('C4', 'Inverse'),
         'inv_kron_B': ('C4', None),
         'inv_unit_wise': ('C4', None),
-        'sync_grad': ('C7', 'sync-grad'),
+        'sync_grad': ('C7', 'Sync-grad'),
         'nb_sync_grad': ('C7', None),
         'reduce_scatter_grad': ('C7', None),
         'all_reduce_undivided_grad': ('C7', None),
         'all_gather_grad': ('C7', None),
         'all_reduce_no_curvature_grad': ('C7', None),
-        'reduce_scatter_curvature': ('C9', 'sync-curvature'),
+        'reduce_scatter_curvature': ('C9', 'Sync-curvature'),
         'all_reduce_undivided_curvature': ('C9', None),
-        'precondition': ('C8', 'precondition'),
+        'precondition': ('C8', 'Precondition'),
     }
 )
 
