@@ -151,8 +151,11 @@ def main():
     for node_id, timeline in enumerate(timelines):
         pipeline_workloads = [Workload(PIPELINE_START, start_time, start_time)]
         for event in pipeline_events:
-            for s, e in timeline[event]:
-                pipeline_workloads.append(Workload(event, time_shift(s), time_shift(e)))
+            for key in timeline:
+                if event not in key:
+                    continue
+                for s, e in timeline[key]:
+                    pipeline_workloads.append(Workload(key, time_shift(s), time_shift(e)))
         pipeline_workloads.append(Workload(PIPELINE_END, end_time, end_time))
         pipeline_workloads.sort(key=lambda x: x.start)
 
@@ -223,14 +226,23 @@ def main():
         num_pipeline_iterations_list.append(num_pipeline_iterations)
         schedules.append([workload.label for workload in schedule])
 
-    # set the number of pipeline iterations to the least common multiple of iterations between all nodes
-    lcm_num_pipeline_iterations = math.lcm(*num_pipeline_iterations_list)
-    for schedule, num_pipeline_iterations in zip(schedules, num_pipeline_iterations_list):
-        schedule *= lcm_num_pipeline_iterations // num_pipeline_iterations
+    # split schedule of each pipeline
+    schedules_split = []
+    for schedule in schedules:
+        schedule_split = []
+        pipeline = [schedule.pop(0)]
+        for workload in schedule:
+            if workload == PIPELINE_START:
+                schedule_split.append(pipeline)
+                pipeline = [workload]
+            else:
+                pipeline.append(workload)
+        schedule_split.append(pipeline)
+        schedules_split.append(schedule_split)
 
     if args.save_path is not None:
         with open(args.save_path, 'wb') as f:
-            pickle.dump(schedules, f)
+            pickle.dump(schedules_split, f)
 
 
 if __name__ == '__main__':
