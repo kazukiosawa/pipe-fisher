@@ -77,7 +77,7 @@ class WorkloadQueue(Workload):
         return len(self.queue)
 
 
-def assign_workloads_to_bubbles(workloads, schedule, fwd_count=0, bwd_count=0, margin_ratio=.1):
+def assign_workloads_to_bubbles(workloads, schedule, fwd_count=0, bwd_count=0, margin_ratio=.0):
     new_schedule = []
     last_workload = schedule.pop(0)
     new_schedule.append(last_workload)
@@ -135,6 +135,8 @@ def main():
         base_time = min(base_time, timelines[0]['call_forward' + TAG_UP_PIPE][0][0])
 
     def time_shift(t):
+        if t is None:
+            return 0
         return t - base_time
 
     start_time = 0
