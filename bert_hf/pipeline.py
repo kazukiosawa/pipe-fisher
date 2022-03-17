@@ -2,7 +2,6 @@ import collections
 from collections import deque
 from typing import List, Tuple, Deque, OrderedDict, Iterator, Union, Dict
 from contextlib import nullcontext
-import math
 
 import torch
 from torch import Tensor
@@ -16,13 +15,18 @@ import asdfghjkl as asdl
 
 import threading
 import threadsafe_queue
-import auto_schedule
+from auto_schedule import PIPELINE_END, FORWARD, BACKWARD, \
+    COV_KRON_A, COV_KRON_B, INV_KRON_A, INV_KRON_B, SYNC_KRON_A, SYNC_KRON_B, \
+    TURN_OFF_SAVE, TURN_ON_SAVE, TAG_UP_PIPE
 
 
 PIPELINE_1F1B = '1f1b'
 PIPELINE_GPIPE = 'gpipe'
 PIPELINE_GPIPE_NGD = 'gpipe_ngd'
 PIPELINE_CHIMERA = 'chimera'
+
+import logging
+logging.basicConfig(format='%(asctime)s - %(message)s', level=logging.INFO)
 
 
 class StageModule(nn.Module):
@@ -57,7 +61,8 @@ class PipelineStage:
                  pipeline_method: str = None,
                  recompute: bool = False,
                  is_up_pipe: bool = False,
-                 up_pipe_stage=None):
+                 up_pipe_stage=None,
+                 nvtx_tag=''):
         assert dist.is_initialized(), 'torch.distributed needs to be initialized.'
         assert num_stages > 1, 'num_stages has to be > 1.'
         assert stage_id in range(num_stages), 'stage_id has be in range(num_stage).'
@@ -78,6 +83,7 @@ class PipelineStage:
             assert up_pipe_stage is not None, 'Up pipeline should be created.'
         self.up_pipe_stage = up_pipe_stage
         self.tag = 2 if is_up_pipe else 1
+        self.nvtx_tag = nvtx_tag
 
         self.forward_recv_queues = {}
         self.backward_recv_queues = {}
@@ -193,8 +199,9 @@ class PipelineStage:
     def recv_output_grads_from_queue(self, key):
         return self.backward_recv_queues[key].remove()
 
-    @nvtx.range('call_forward')
     def call_forward(self, input_source: OrderedDict[str, Tensor]):
+        nvtx.range_push('call_forward' + self.nvtx_tag)
+
         inputs = collections.OrderedDict()
         if not self.is_first_stage:
             for key in self.keys_from_prev_stage:
@@ -216,8 +223,10 @@ class PipelineStage:
         # push inputs/outputs to the queue
         self.input_output_queue.append((inputs, outputs))
 
-    @nvtx.range('call_backward')
+        nvtx.range_pop()
+
     def call_backward(self, no_sync=True):
+        nvtx.range_push('call_backward' + self.nvtx_tag)
         assert len(self.input_output_queue) > 0, 'No input/output is set.'
         # pop inputs/outputs from the queue
         inputs, outputs = self.input_output_queue.popleft()
@@ -249,6 +258,8 @@ class PipelineStage:
 
         del inputs, outputs
 
+        nvtx.range_pop()
+
     def no_sync_if_need(self, no_sync: bool):
         if isinstance(self.stage_module, DistributedDataParallel) and no_sync:
             return self.stage_module.no_sync()
@@ -256,6 +267,8 @@ class PipelineStage:
 
     @nvtx.range('sync_grad')
     def sync_grad(self):
+        nvtx.range_push('sync_grad' + self.nvtx_tag)
+
         assert self.grad_sync_group is not None, 'grad_sync_group is not specified.'
         dist.barrier(group=self.grad_sync_group)
         grads = [p.grad for p in self.stage_module.parameters() if p.grad is not None]
@@ -264,8 +277,11 @@ class PipelineStage:
         packed_tensor /= self.grad_sync_group.size()
         vector_to_parameters(packed_tensor, grads)
 
-    @nvtx.range('nb_sync_grad')
+        nvtx.range_pop()
+
     def nb_sync_grad(self):
+        nvtx.range_push('nb_sync_grad' + self.nvtx_tag)
+
         assert self.grad_sync_group is not None, 'grad_sync_group is not specified.'
         dist.barrier(group=self.grad_sync_group)
         grads = [p.grad for p in self.stage_module.parameters() if p.grad is not None]
@@ -274,11 +290,17 @@ class PipelineStage:
         self.packed_grads.append(packed_tensor)
         self.handles.append(dist.all_reduce(self.packed_grads[-1], group=self.grad_sync_group, async_op=True))
 
+        nvtx.range_pop()
+
     def wait_all(self):
+        nvtx.range_push('wait_all' + self.nvtx_tag)
+
         for _ in range(len(self.handles)):
             self.handles.pop(0).wait()
             packed_tensor = self.packed_grads.pop(0) / self.grad_sync_group.size()
             vector_to_parameters(packed_tensor, self.grads.pop(0))
+
+        nvtx.range_pop()
 
     def assert_intermediate_queues_are_empty(self):
         assert len(self.input_output_queue) == 0, f'input_output_queue of stage{self.stage_id} is not empty.'
@@ -294,11 +316,12 @@ class PipelineStage:
                       pipeline_method=None,
                       data_iterator_for_up_pipe: Iterator = None,
                       ngd: asdl.NaturalGradient = None,
-                      iteration: int = None):
+                      iteration: int = None,
+                      no_sync_grad=False):
         if pipeline_method is None:
             pipeline_method = self.pipeline_method
 
-        kwargs = dict(data_iterator=data_iterator, num_micro_batches=num_micro_batches)
+        kwargs = dict(data_iterator=data_iterator, num_micro_batches=num_micro_batches, no_sync_grad=no_sync_grad)
         if pipeline_method == PIPELINE_1F1B:
             _call_pipeline = self._call_1f1b_pipeline
         elif pipeline_method == PIPELINE_GPIPE:
@@ -319,63 +342,117 @@ class PipelineStage:
         self.assert_intermediate_queues_are_empty()
         return self.total_loss
 
+    @nvtx.range('call_pipeline')
     def call_scheduled_pipeline(self,
                                 schedule: List[str],
-                                num_pipeline_iterations,
                                 data_iterator,
                                 ngd: asdl.NaturalGradient,
-                                optimizers: List[torch.optim.Optimizer],
-                                data_iterator_for_up_pipe=None):
+                                cxt: asdl.OperationContext,
+                                data_iterator_up_pipe=None,
+                                ngd_up_pipe: asdl.NaturalGradient = None,
+                                cxt_up_pipe: asdl.OperationContext = None,
+                                up_side_down=False):
         self.total_loss = 0.
         self.assert_intermediate_queues_are_empty()
-        num_pipeline_iterations_in_schedule = sum(map(lambda x: x == auto_schedule.PIPELINE_START, schedule))
-        num_calls = math.ceil(num_pipeline_iterations / num_pipeline_iterations_in_schedule)
 
-        with asdl.save_inputs_outgrads(self.stage_module, ignore_modules=ngd.ignore_modules) as cxt:
-            for _ in range(num_calls):
-                for label in schedule:
-                    if label == auto_schedule.PIPELINE_START:
-                        nvtx.range_push('call_pipeline')
-                        for optimizer in optimizers:
-                            optimizer.zero_grad()
-                    elif label == auto_schedule.FORWARD:
-                        self.call_forward(next(data_iterator))
-                    elif label == auto_schedule.BACKWARD:
-                        self.call_backward()
-                    elif auto_schedule.COV_KRON_A in label:
-                        module_name = label.replace(f'{auto_schedule.COV_KRON_A}_', '')
-                        ngd.accumulate_curvature(cxt=cxt, module_name=module_name, kron=['A'], num_batches=1,
-                                                 no_save=True)
-                    elif auto_schedule.COV_KRON_B in label:
-                        module_name = label.replace(f'{auto_schedule.COV_KRON_B}_', '')
-                        ngd.accumulate_curvature(cxt=cxt, module_name=module_name, kron=['B'], num_batches=1,
-                                                 no_save=True)
-                    elif auto_schedule.INV_KRON_A in label:
-                        module_name = label.replace(f'{auto_schedule.INV_KRON_A}_', '')
-                        ngd.save_curvature(cxt, module_name=module_name)
-                        ngd.sync_curvature(module_name=module_name, kron=['A'], enabled=self.is_distributed)
-                        ngd.update_inv(module_name=module_name, kron=['A'], zero_curvature=True)
-                    elif auto_schedule.INV_KRON_B in label:
-                        module_name = label.replace(f'{auto_schedule.INV_KRON_B}_', '')
-                        ngd.save_curvature(cxt, module_name=module_name)
-                        ngd.sync_curvature(module_name=module_name, kron=['B'], enabled=self.is_distributed)
-                        ngd.update_inv(module_name=module_name, kron=['B'], zero_curvature=True)
-                    elif label == auto_schedule.PIPELINE_END:
-                        ngd.sync_grad_pre_precondition(self.is_distributed)
-                        ngd.precondition()
-                        ngd.sync_grad_post_precondition(self.is_distributed)
-                        for optimizer in optimizers:
-                            optimizer.step()
-                        nvtx.range_pop()
-                    elif label == auto_schedule.TURN_OFF_SAVE:
-                        cxt.turn_off_save_inputs_outgrads()
-                    elif label == auto_schedule.TURN_ON_SAVE:
-                        cxt.turn_on_save_inputs_outgrads()
+        dual_pipelines = data_iterator_up_pipe is not None or ngd_up_pipe is not None
+        if dual_pipelines:
+            assert data_iterator_up_pipe is not None
+            assert ngd_up_pipe is not None
+
+        if up_side_down:
+            stage_down_pipe = self.up_pipe_stage
+            stage_up_pipe = self
+            data_iterator_down_pipe = data_iterator_up_pipe
+            data_iterator_up_pipe = data_iterator
+            ngd_down_pipe = ngd_up_pipe
+            ngd_up_pipe = ngd
+            cxt_down_pipe = cxt_up_pipe
+            cxt_up_pipe = cxt
+        else:
+            stage_down_pipe = self
+            stage_up_pipe = self.up_pipe_stage
+            data_iterator_down_pipe = data_iterator
+            ngd_down_pipe = ngd
+            cxt_down_pipe = cxt
+
+        def get_ngd_and_module_name(_label, _event):
+            _module_name = _label.replace(f'{_event}:', '')
+            if TAG_UP_PIPE in _label:
+                assert dual_pipelines
+                return ngd_up_pipe, _module_name.replace(TAG_UP_PIPE, '')
+            return ngd_down_pipe, _module_name
+
+        for label in schedule:
+            logging.info(f'rank: {dist.get_rank()} {label}')
+            if label == FORWARD:
+                stage_down_pipe.call_forward(next(data_iterator_down_pipe))
+            elif label == FORWARD + TAG_UP_PIPE:
+                stage_up_pipe.call_forward(next(data_iterator_up_pipe))
+            elif label == BACKWARD:
+                stage_down_pipe.call_backward()
+            elif label == BACKWARD + TAG_UP_PIPE:
+                stage_up_pipe.call_backward()
+            elif COV_KRON_A in label or COV_KRON_B in label:
+                if COV_KRON_A in label:
+                    A_or_B = 'A'
+                    _ngd, module_name = get_ngd_and_module_name(label, COV_KRON_A)
+                else:
+                    A_or_B = 'B'
+                    _ngd, module_name = get_ngd_and_module_name(label, COV_KRON_B)
+                _cxt = cxt_up_pipe if TAG_UP_PIPE in label else cxt_down_pipe
+                _ngd.accumulate_curvature(cxt=_cxt, module_name=module_name, kron=[A_or_B], num_batches=1)
+            elif label in [SYNC_KRON_A, SYNC_KRON_B]:
+                A_or_B = 'A' if label == SYNC_KRON_A else 'B'
+                if dual_pipelines:
+                    ngd_down_pipe.save_curvature(cxt_down_pipe)
+                    ngd_up_pipe.save_curvature(cxt_up_pipe)
+                    ngd_down_pipe.sync_curvature(kron=[A_or_B], async_op=True)
+                    ngd_up_pipe.sync_curvature(kron=[A_or_B], async_op=True)
+                    ngd_down_pipe.wait_all_curvature_sync()
+                    ngd_up_pipe.wait_all_curvature_sync()
+                else:
+                    ngd_down_pipe.save_curvature(cxt_down_pipe)
+                    ngd_down_pipe.sync_curvature(kron=[A_or_B], enabled=self.is_distributed)
+            elif INV_KRON_A in label or INV_KRON_B in label:
+                if INV_KRON_A in label:
+                    A_or_B = 'A'
+                    _ngd, module_name = get_ngd_and_module_name(label, INV_KRON_A)
+                else:
+                    A_or_B = 'B'
+                    _ngd, module_name = get_ngd_and_module_name(label, INV_KRON_B)
+                _ngd.update_inv(module_name=module_name, kron=[A_or_B], zero_curvature=True, partition_aware=True)
+            elif label == PIPELINE_END:
+                if dual_pipelines:
+                    ngd_down_pipe.sync_grad_pre_precondition(self.is_distributed, async_op=True)
+                    ngd_up_pipe.sync_grad_pre_precondition(self.is_distributed, async_op=True)
+                    ngd_down_pipe.wait_all_grad_sync()
+                    ngd_up_pipe.wait_all_grad_sync()
+
+                    ngd_down_pipe.precondition()
+                    ngd_up_pipe.precondition()
+
+                    ngd_down_pipe.sync_grad_post_precondition(self.is_distributed, async_op=True)
+                    ngd_up_pipe.sync_grad_post_precondition(self.is_distributed, async_op=True)
+                    ngd_down_pipe.wait_all_grad_sync()
+                    ngd_up_pipe.wait_all_grad_sync()
+                else:
+                    ngd_down_pipe.sync_grad_pre_precondition(self.is_distributed)
+                    ngd_down_pipe.precondition()
+                    ngd_down_pipe.sync_grad_post_precondition(self.is_distributed)
+            elif label == TURN_OFF_SAVE:
+                cxt_down_pipe.turn_off_save_inputs_outgrads()
+                if dual_pipelines:
+                    cxt_up_pipe.turn_off_save_inputs_outgrads()
+            elif label == TURN_ON_SAVE:
+                cxt_down_pipe.turn_on_save_inputs_outgrads()
+                if dual_pipelines:
+                    cxt_up_pipe.turn_on_save_inputs_outgrads()
 
         self.assert_intermediate_queues_are_empty()
         return self.total_loss
 
-    def _call_1f1b_pipeline(self, data_iterator: Iterator, num_micro_batches):
+    def _call_1f1b_pipeline(self, data_iterator: Iterator, num_micro_batches, no_sync_grad=False):
         """
         1F1B
         """
@@ -391,10 +468,10 @@ class PipelineStage:
             self.call_backward()
         self.call_backward()
         
-        if self.is_distributed:
+        if self.is_distributed and not no_sync_grad:
             self.sync_grad()
 
-    def _call_gpipe_pipeline(self, data_iterator: Iterator, num_micro_batches):
+    def _call_gpipe_pipeline(self, data_iterator: Iterator, num_micro_batches, no_sync_grad=False):
         """
         GPipe
         """
@@ -404,7 +481,7 @@ class PipelineStage:
         for _ in range(num_micro_batches):
             self.call_backward()
 
-        if self.is_distributed:
+        if self.is_distributed and not no_sync_grad:
             self.sync_grad()
 
     def _call_gpipe_pipeline_ngd(self,
@@ -456,7 +533,8 @@ class PipelineStage:
     def _call_chimera_pipeline(self,
                                data_iterator: Iterator,
                                data_iterator_for_up_pipe: Iterator,
-                               num_micro_batches):
+                               num_micro_batches,
+                               no_sync_grad=False):
         """
         Chimera with dual pipelines
         """
@@ -490,10 +568,12 @@ class PipelineStage:
             call('call_backward', down_or_up, up_side_down=not first_half)
 
         def wait_all(down_or_up):
-            call('wait_all', down_or_up, up_side_down=not first_half)
+            if not no_sync_grad:
+                call('wait_all', down_or_up, up_side_down=not first_half)
 
         def sync_grad(down_or_up):
-            call('nb_sync_grad', down_or_up)
+            if not no_sync_grad:
+                call('nb_sync_grad', down_or_up)
 
         for acc_step in range(acc_steps):
             for _ in range(schedule_number_a):
