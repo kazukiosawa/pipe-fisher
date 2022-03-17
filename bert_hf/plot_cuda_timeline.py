@@ -32,6 +32,13 @@ key_to_color_label = OrderedDict(
 )
 
 
+def sort(array, num_split):
+    array_sorted = []
+    for i in range(num_split):
+        array_sorted += array[i:len(array):num_split]
+    return array_sorted
+
+
 def main():
     fig = plt.figure(figsize=(20, 8))
     gs = fig.add_gridspec(1, 1)
@@ -52,7 +59,7 @@ def main():
     colors_alpha = []
     used_keys = set()
     width = .95
-    for idx, timeline in enumerate(timelines):
+    for idx, timeline in enumerate(sort(timelines, args.num_replicas)):
         y = len(timelines) - idx - 1
         for i, event_txt in enumerate(timeline):
             if not any(key in event_txt for key in key_to_color_label):
@@ -111,6 +118,7 @@ if __name__ == '__main__':
     parser.add_argument('pickle_paths', type=str)
     parser.add_argument('--fig_path', type=str, default='prof.png')
     parser.add_argument('--title', type=str, default=None)
+    parser.add_argument('--num_replicas', type=int, default=1)
     args = parser.parse_args()
 
     timelines = []
