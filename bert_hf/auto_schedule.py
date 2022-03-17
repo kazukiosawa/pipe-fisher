@@ -77,7 +77,7 @@ class WorkloadQueue(Workload):
         return len(self.queue)
 
 
-def assign_workloads_to_bubbles(workloads, schedule, fwd_count=0, bwd_count=0, margin_ratio=.0):
+def assign_workloads_to_bubbles(workloads, schedule, fwd_count=0, bwd_count=0, margin_ratio=.1):
     new_schedule = []
     last_workload = schedule.pop(0)
     new_schedule.append(last_workload)
@@ -192,12 +192,16 @@ def main():
                 schedule = new_schedule
                 break
 
+            num_remaining_workloads_before = len(ngd_workloads)
             # add one pipeline
             additional_schedule = assign_workloads_to_bubbles(ngd_workloads,
                                                               pipeline_workloads.copy(),
                                                               fwd_count=num_micro_batches,
                                                               bwd_count=num_micro_batches)
             schedule += additional_schedule
+            if len(ngd_workloads) == num_remaining_workloads_before:
+                for _ in range(len(ngd_workloads)):
+                    schedule.append(ngd_workloads.pop(0))
 
         schedule.append(Workload(TURN_ON_SAVE, schedule[-1].end, schedule[-1].end))
 
