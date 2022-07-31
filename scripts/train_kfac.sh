@@ -23,7 +23,7 @@ srun python main_bert_simple.py \
         --corpus_path ./bert_data/wikipedia.segmented.nltk.txt \
         --vocab_path ./bert_data/bert-large-uncased-vocab.txt \
         --do_lower_case \
-        --bert_config_path ./bert_configs/bert_config_${model}-uncased.json \
+        --bert_config_path ./configs/bert_config_${model}-uncased.json \
         --num_workers 8 \
         --batch_size $bs \
         --gradient_accumulation_steps $acc \

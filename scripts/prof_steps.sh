@@ -26,7 +26,7 @@ srun --wait=0 scripts/nsys_wrap.sh \
             --vocab_path ./bert_data/bert-large-uncased-vocab.txt \
             --corpus_lines 10000 \
             --do_lower_case \
-            --bert_config_path ./bert_configs/bert_config_${model}-uncased.json \
+            --bert_config_path ./configs/bert_config_${model}-uncased.json \
             --max_seq_length 128 \
             --micro_batch_size $microbs \
             --num_optimization_steps 8 \
