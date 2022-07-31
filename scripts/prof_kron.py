@@ -7,10 +7,13 @@ import torch
 from torch import nn
 import asdfghjkl as asdl
 from transformers.models.bert import BertLayer, BertConfig
+from transformer_layers import OPTDecoderLayer, OPTConfig
+from transformer_layers import T5Block, T5Config
 
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--bert_config', type=str)
+parser.add_argument('--arch', choices=['bert', 'opt', 't5'], default='bert')
+parser.add_argument('--config', type=str)
 parser.add_argument('--batch_sizes', type=str, default='1,2,4,8,16')
 parser.add_argument('--n_batches', type=int, default=4)
 parser.add_argument('--max_seq_len', type=int, default=128)
@@ -50,8 +53,14 @@ def time_f(f):
 
 
 def main(batch_size):
-    config = BertConfig.from_json_file(args.bert_config)
-    model = BertLayer(config).to(device)
+    if args.arch == 'bert':
+        config_cls, block_cls = BertConfig, BertLayer
+    elif args.arch == 'opt':
+        config_cls, block_cls = OPTConfig, OPTDecoderLayer
+    else:
+        config_cls, block_cls = T5Config, T5Block
+    config = config_cls.from_json_file(args.config)
+    model = block_cls(config).to(device)
 
     def nothing():
         pass
