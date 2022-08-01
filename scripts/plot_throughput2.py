@@ -57,68 +57,73 @@ def plot(depth, n_micro, ax, color, ms, alpha, throughput=True, ylabel=False):
         pipes_recomp_kfac_save_err.append((time_inv + time_kron * n_micro) / time_bubble)
         pipes_recomp_kfac_no_save.append(time_inv / time_bubble)
 
-    base_name = 'Chimera' if args.chimera else 'GPipe/1F1B'
-
     if throughput:
         for y in [y_base, y_recomp, y_kfac_save_err, y_kfac_no_save, y_recomp_kfac_save_err, y_recomp_kfac_no_save]:
             for i in range(len(y)):
                 # throughput (sequences/s)
                 y[i] = n_micro * micro_bs_list[i] / y[i] * 1000  # ms -> s
 
-#        ax.plot(x, y_base, marker='.', color=color, ms=ms, alpha=alpha, ls='--')
-#        ax.plot(x, y_recomp, label=f'{base_name} (R)', marker='.', ms=20, color='gray', ls='--')
         ax.plot(x, y_kfac_save_err, label=f'D={depth}, N_micro={n_micro}', marker='.', color=color, ms=ms, alpha=alpha)
-#        ax.plot(x, y_recomp_kfac_save_err, label='PipeFisher (R)', marker='.', ms=20, color='red', ls='--')
         if ylabel:
             ax.set_ylabel('Throughput (seqs/s)')
     else:
         ax.plot(x, pipes_kfac_save_err, label=f'D={depth}, N_micro={n_micro}', marker='.', color=color, ms=ms, alpha=alpha)
-#        ax.plot(x, pipes_recomp_kfac_save_err, label='PipeFisher (R)', marker='.', ms=20, color='red', ls='--')
         if ylabel:
             ax.set_ylabel('(curv+inv) / bubble')
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--data_path', type=str)
+    parser.add_argument('--data_paths', type=str)
+    parser.add_argument('--titles', type=str)
     parser.add_argument('--fig_path', type=str)
     parser.add_argument('--chimera', action='store_true')
     parser.add_argument('--batch_sizes', type=str, default='1,2,4,8')
     args = parser.parse_args()
 
-    data = pd.read_csv(args.data_path, header=0, index_col=0).to_dict()
+    data_paths = args.data_paths.split(',')
+    titles = args.titles.split(',')
+    assert len(data_paths) == len(titles)
 
-    fig = plt.figure(figsize=(24, 8))
-    gs = fig.add_gridspec(2, 1)
+    ncol = len(data_paths)
+    fig = plt.figure(figsize=(10 * ncol, 8))
+    gs = fig.add_gridspec(2, ncol)
 
     micro_bs_list = [int(s) for s in args.batch_sizes.split(',')]
     depth_list = [4, 8, 16, 32]
     n_micro_scale_list = [3, 2, 1]
 
     x = np.arange(len(micro_bs_list))
-    ax1 = fig.add_subplot(gs[0, 0])
-    ax2 = fig.add_subplot(gs[1, 0])
 
     alphas = [1, 0.5, 0.25]
     marker_sizes = [20, 15, 10]
 
-    for i, depth in enumerate(depth_list):
-        color = colors[i]
-        for j, n_micro_scale in enumerate(n_micro_scale_list):
-            alpha = alphas[j]
-            ms = marker_sizes[j]
-            n_micro = depth * n_micro_scale
-            plot(depth, n_micro, ax1, color, ms, alpha, ylabel=True)
-            ax1.legend(loc='lower right', fontsize=18, ncol=len(depth_list))
-            plot(depth, n_micro, ax2, color, ms, alpha, throughput=False, ylabel=True)
-#            ax2.legend(loc='upper right', fontsize=18, ncol=len(depth_list))
+    for col_id in range(ncol):
+        ax1 = fig.add_subplot(gs[0, col_id])
+        ax2 = fig.add_subplot(gs[1, col_id])
 
-    for ax in [ax1, ax2]:
-        ax.set_xticks(x)
-        ax.set_ylim(bottom=0)
-#        ax.set_xticklabels([f'B_micro={micro_bs}' for micro_bs in micro_bs_list])
-        ax.set_xticklabels([micro_bs for micro_bs in micro_bs_list])
-    ax2.set_xlabel('Micro-batch size (B_micro)')
+        data = pd.read_csv(data_paths[col_id], header=0, index_col=0).to_dict()
+        title = titles[col_id]
 
-    plt.tight_layout()
-    plt.savefig(args.fig_path)
+        for i, depth in enumerate(depth_list):
+            color = colors[i]
+            for j, n_micro_scale in enumerate(n_micro_scale_list):
+                alpha = alphas[j]
+                ms = marker_sizes[j]
+                n_micro = depth * n_micro_scale
+                plot(depth, n_micro, ax1, color, ms, alpha, ylabel=True)
+                plot(depth, n_micro, ax2, color, ms, alpha, throughput=False, ylabel=True)
+
+        ax1.set_title(title)
+        for ax in [ax1, ax2]:
+            ax.set_xticks(x)
+            ax.set_ylim(bottom=0)
+            ax.set_xticklabels([micro_bs for micro_bs in micro_bs_list])
+        ax2.set_xlabel('Micro-batch size (B_micro)')
+
+        if col_id == ncol - 1:
+            handles, labels = ax2.get_legend_handles_labels()
+            lgd = fig.legend(handles, labels, loc='upper center', bbox_to_anchor=(0.5, 0), ncol=len(depth_list))
+
+    plt.savefig(args.fig_path, bbox_extra_artists=(lgd,), bbox_inches='tight')
+
