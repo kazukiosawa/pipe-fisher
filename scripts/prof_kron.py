@@ -1,6 +1,8 @@
 import argparse
 import time
 from collections import deque
+import csv
+
 import numpy as np
 
 import torch
@@ -19,6 +21,7 @@ parser.add_argument('--n_batches', type=int, default=4)
 parser.add_argument('--max_seq_len', type=int, default=128)
 parser.add_argument('--num_iters', type=int, default=10)
 parser.add_argument('--num_warmups', type=int, default=5)
+parser.add_argument('--csv_name', type=str, default='time_memory.csv')
 
 
 def generate_batch(batch_size, seq_len, embed_size):
@@ -53,6 +56,7 @@ def time_f(f):
 
 
 def main(batch_size):
+
     if args.arch == 'bert':
         config_cls, block_cls = BertConfig, BertLayer
     elif args.arch == 'opt':
@@ -62,15 +66,18 @@ def main(batch_size):
     config = config_cls.from_json_file(args.config)
     model = block_cls(config).to(device)
 
+    x = {
+        'hidden_states': generate_batch(batch_size, args.max_seq_len, config.hidden_size).to(device),
+        'attention_mask': gen_attention_mask(args.max_seq_len, args.max_seq_len).to(device)
+    }
+    if args.arch == 'opt':
+        x['attention_mask'] = x['attention_mask'].unsqueeze(0).repeat(batch_size, 1, 1, 1)
+
     def nothing():
         pass
 
     time_f(nothing)
 
-    x = {
-        'hidden_states': generate_batch(batch_size, args.max_seq_len, config.hidden_size).to(device),
-        'attention_mask': gen_attention_mask(args.max_seq_len, args.max_seq_len).to(device)
-    }
     n_batches = args.n_batches
 
     def fwd_pipeline():
@@ -129,18 +136,31 @@ def main(batch_size):
     time_f(inv)
     time_f(precondition)
 
-    print(f'{batch_size},'
-          f'{(results["fwd_pipeline"]["time"] - results["nothing"]["time"]) / n_batches},'  # time_f
-          f'{(results["pipeline"]["time"] - results["fwd_pipeline"]["time"]) / n_batches},'  # time_b
-          f'{(results["pipeline_and_curvature"]["time"] - results["pipeline"]["time"]) / n_batches},'  # time_kron
-          f'{results["inv"]["time"]},'  # time_inv
-          f'{results["precondition"]["time"]},'  # time_prec
-          f'{results["nothing"]["memory"]},'  # mem_param
-          f'{(results["fwd_pipeline"]["memory"] - results["nothing"]["memory"]) / n_batches},'  # mem_act
-          f'{results["pipeline"]["memory"] - results["fwd_pipeline"]["memory"]},'  # mem_peak_err
-          f'{(numel_err * 4 /float(1<<20)) / n_batches},'  # mem_save_err
-          f'{numel_kron * 4 /float(1<<20)}'  # mem_kron
-    )
+    writer.writerow([
+        batch_size,  # bs
+        (results["fwd_pipeline"]["time"] - results["nothing"]["time"]) / n_batches,  # time_f
+        (results["pipeline"]["time"] - results["fwd_pipeline"]["time"]) / n_batches,  # time_b
+        (results["pipeline_and_curvature"]["time"] - results["pipeline"]["time"]) / n_batches,  # time_kron
+        results["inv"]["time"],  # time_inv
+        results["precondition"]["time"],  # time_prec
+        results["nothing"]["memory"],  # mem_param
+        (results["fwd_pipeline"]["memory"] - results["nothing"]["memory"]) / n_batches,  # mem_act
+        results["pipeline"]["memory"] - results["fwd_pipeline"]["memory"],  # mem_peak_err
+        (numel_err * 4 / float(1 << 20)) / n_batches,  # mem_save_err
+        numel_kron * 4 / float(1 << 20)  # mem_kron
+    ])
+#    print(f'{batch_size},'
+#          f'{(results["fwd_pipeline"]["time"] - results["nothing"]["time"]) / n_batches},'  # time_f
+#          f'{(results["pipeline"]["time"] - results["fwd_pipeline"]["time"]) / n_batches},'  # time_b
+#          f'{(results["pipeline_and_curvature"]["time"] - results["pipeline"]["time"]) / n_batches},'  # time_kron
+#          f'{results["inv"]["time"]},'  # time_inv
+#          f'{results["precondition"]["time"]},'  # time_prec
+#          f'{results["nothing"]["memory"]},'  # mem_param
+#          f'{(results["fwd_pipeline"]["memory"] - results["nothing"]["memory"]) / n_batches},'  # mem_act
+#          f'{results["pipeline"]["memory"] - results["fwd_pipeline"]["memory"]},'  # mem_peak_err
+#          f'{(numel_err * 4 /float(1<<20)) / n_batches},'  # mem_save_err
+#          f'{numel_kron * 4 /float(1<<20)}'  # mem_kron
+#    )
 
 
 if __name__ == '__main__':
@@ -149,5 +169,11 @@ if __name__ == '__main__':
     device = 'cuda:0'
     results = {}
     batch_sizes = [int(s) for s in args.batch_sizes.split(',')]
-    for bs in batch_sizes:
-        main(bs)
+    header = ['bs', 'time_f', 'time_b', 'time_kron', 'time_inv', 'time_prec',
+              'mem_param', 'mem_act', 'mem_peak_err', 'mem_save_err', 'mem_kron']
+    with open(args.csv_name, 'w') as f:
+        writer = csv.writer(f)
+        writer.writerow(header)
+        for bs in batch_sizes:
+            print('bs', bs)
+            main(bs)
