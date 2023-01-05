@@ -16,7 +16,7 @@ from torch.cuda import nvtx
 
 from transformers import BertTokenizer, BertConfig, BertLayer
 
-from pipeline import PipelineStage, PIPELINE_1F1B, PIPELINE_GPIPE, PIPELINE_CHIMERA, PIPELINE_GPIPE_NGD
+from pipeline import PipelineStage, PIPELINE_1F1B, PIPELINE_GPIPE, PIPELINE_CHIMERA, PIPELINE_INTER, PIPELINE_GPIPE_NGD
 from utils import init_dist_process_group
 from bert_optim import BertAdam
 from bert_dataset import BERTDataset
@@ -69,7 +69,9 @@ parser.add_argument("--warmup_proportion", default=0.1, type=float,
                     help="Proportion of training to perform linear learning rate warmup for.")
 parser.add_argument("--damping", type=float, default=0.01)
 # Pipeline
-parser.add_argument('--pipeline_method', choices=[PIPELINE_1F1B, PIPELINE_GPIPE, PIPELINE_CHIMERA, PIPELINE_GPIPE_NGD], default=PIPELINE_1F1B)
+parser.add_argument('--pipeline_method', choices=[PIPELINE_1F1B, PIPELINE_GPIPE, PIPELINE_CHIMERA, PIPELINE_INTER, PIPELINE_GPIPE_NGD], default=PIPELINE_1F1B)
+parser.add_argument("--chunks", default=2, type=int,
+                    help="Number of chunks for interleaved 1f1b.")
 parser.add_argument('--recompute', action='store_true',
                     help='Recompute activations in backward pass')
 parser.add_argument('--num_stages', type=int, default=4,
@@ -109,12 +111,22 @@ def main():
 
 
 def train_one_epoch(epoch, step, num_steps_for_this_epoch):
+
     num_p2p_comm = num_steps_for_this_epoch * num_micro_batches_per_step
-    stage.start_comm_threads(num_p2p_comm)
+    if interleaved_pipelines:
+        stage.start_interleaved_pipeline_comm_threads(num_p2p_comm)
+    else:
+        stage.start_comm_threads(num_p2p_comm)
+    
     stage.stage_module.train()
     if dual_pipelines:
         stage.up_pipe_stage.start_comm_threads(num_p2p_comm)
         stage.up_pipe_stage.stage_module.train()
+
+    if interleaved_pipelines:
+        for stage in stage.interleaved_stages:
+            stage.start_interleaved_pipeline_comm_threads(num_p2p_comm)
+            stage.stage_module.train()
 
     train_iterator = iter(train_loader)
     train_iterator_for_up_pipe = iter(train_loader_for_up_pipe) if dual_pipelines else None
@@ -280,25 +292,49 @@ if __name__ == "__main__":
 
     num_stages = args.num_stages
     recompute = args.recompute
-    assert world_size % num_stages == 0
-    num_ranks_per_stage = int(world_size / num_stages)
-    num_replicas = num_ranks_per_stage
+    chunks = args.chunks
+    
     dual_pipelines = args.pipeline_method == PIPELINE_CHIMERA
+    interleaved_pipelines = args.pipeline_method == PIPELINE_INTER
+    if interleaved_pipelines:
+        assert chunks > 1
+        assert num_stages % chunks == 0
+        assert world_size % (num_stages // chunks) == 0
+    else:
+        assert world_size % num_stages == 0
+
+    num_ranks_per_stage = int(world_size / num_stages)
+    if interleaved_pipelines:
+        num_ranks_per_stage = world_size // (num_stages // chunks)
+    num_replicas = num_ranks_per_stage
+
     if dual_pipelines:
         num_replicas *= 2
     is_distributed = num_replicas > 1
 
     def rank_to_stage(_rank, down_pipe=True):
-        if down_pipe:
+        if down_pipe and chunks==1:
             return _rank // num_ranks_per_stage
+        elif down_pipe and chunks>1:
+            stages_per_chunk = num_stages // chunks
+            stages = []
+            for _chunk in range(chunks):
+                stages.append(_rank // num_ranks_per_stage + stages_per_chunk * _chunk)
+            return stages
         else:
             return (world_size - 1 - _rank) // num_ranks_per_stage
 
     stage_to_ranks = {_stage_id: [] for _stage_id in range(num_stages)}
+
     for _rank in range(world_size):
-        stage_to_ranks[rank_to_stage(_rank)].append(_rank)
-        if dual_pipelines:
-            stage_to_ranks[rank_to_stage(_rank, down_pipe=False)].append(_rank)
+        if interleaved_pipelines:
+            stages_per_chunk = num_stages // chunks
+            for _chunk in range(chunks):
+                stage_to_ranks[_rank // num_ranks_per_stage + _chunk * stages_per_chunk].append(_rank)
+        else:
+            stage_to_ranks[rank_to_stage(_rank)].append(_rank)
+            if dual_pipelines:
+                stage_to_ranks[rank_to_stage(_rank, down_pipe=False)].append(_rank)
 
     grad_sync_groups = []
     for _stage_id in range(num_stages):
@@ -309,7 +345,7 @@ if __name__ == "__main__":
     bert_config = BertConfig.from_json_file(args.bert_config_path)
     micro_batch_size = args.micro_batch_size
     max_seq_length = args.max_seq_length
-    is_ngd_training = args.record_ngd or args.ngd_schedule_path is not None or args.pipeline_method == PIPELINE_GPIPE_NGD
+    is_ngd_training = (args.record_ngd or args.ngd_schedule_path is not None or args.pipeline_method == PIPELINE_GPIPE_NGD) and not interleaved_pipelines
 
     def get_pipeline_stage(down_pipe=True):
         stage_id = rank_to_stage(rank, down_pipe=down_pipe)
@@ -329,9 +365,57 @@ if __name__ == "__main__":
                              is_up_pipe=not down_pipe,
                              up_pipe_stage=get_pipeline_stage(
                                  down_pipe=False) if down_pipe and dual_pipelines else None,
+                             interleaved_stages=None,
                              nvtx_tag='' if down_pipe else auto_schedule.TAG_UP_PIPE)
 
-    stage = get_pipeline_stage()
+    def get_interleaved_pipeline_stages(down_pipe=True):
+        stage_ids = rank_to_stage(rank, down_pipe=down_pipe)
+        rank_interval = num_ranks_per_stage if down_pipe else -num_ranks_per_stage
+        stages = []
+        for i, stage_id in enumerate(stage_ids):
+            if i>0:
+                stage_module = get_stage_bert_for_pretraining(stage_id,
+                                                              num_stages,
+                                                              bert_config).to(device)
+                stage = PipelineStage(stage_id=stage_id,
+                                      num_stages=num_stages,
+                                      stage_module=stage_module,
+                                      batch_sizes=(micro_batch_size, max_seq_length),
+                                      pipeline_method=args.pipeline_method,
+                                      recompute=recompute,
+                                      prev_rank=(rank-rank_interval+world_size)%world_size if stage_id > 0 else None,
+                                      next_rank=(rank+rank_interval)%world_size if stage_id < num_stages-1 else None,
+                                      grad_sync_group=grad_sync_groups[stage_id],
+                                      is_up_pipe=not down_pipe,
+                                      up_pipe_stage=None,
+                                      interleaved_stages=None,
+                                      nvtx_tag='' if down_pipe else auto_schedule.TAG_UP_PIPE)
+                stages.append(stage)
+
+        first_stage_id = stage_ids[0]
+        stage_module = get_stage_bert_for_pretraining(first_stage_id,
+                                                      num_stages,
+                                                      bert_config).to(device)
+        return PipelineStage(stage_id=first_stage_id,
+                             num_stages=num_stages,
+                             stage_module=stage_module,
+                             batch_sizes=(micro_batch_size, max_seq_length),
+                             pipeline_method=args.pipeline_method,
+                             recompute=recompute,
+                             prev_rank=(rank-rank_interval+world_size)%world_size if first_stage_id > 0 else None,
+                             next_rank=(rank+rank_interval)%world_size if first_stage_id < num_stages-1 else None,
+                             grad_sync_group=grad_sync_groups[first_stage_id],
+                             is_up_pipe=not down_pipe,
+                             up_pipe_stage=None,
+                             interleaved_stages=stages,
+                             nvtx_tag='' if down_pipe else auto_schedule.TAG_UP_PIPE)
+
+
+    if interleaved_pipelines:
+        stage = get_interleaved_pipeline_stages()
+    else
+        stage = get_pipeline_stage()
+
     is_stage_master = rank % num_ranks_per_stage == 0
 
     # Prepare BERT dataset
@@ -386,6 +470,8 @@ if __name__ == "__main__":
                 ngd_schedule = ngd_schedules[rank_to_stage(rank)]
             else:
                 ngd_schedule = ngd_schedules[rank_to_stage(rank, down_pipe=False)]
+        elif interleaved_pipelines:
+            print("ngd not supported for interleaved pipelines")
         else:
             ngd_schedule = ngd_schedules[rank_to_stage(rank)]
 
@@ -469,9 +555,15 @@ if __name__ == "__main__":
                         t_total=num_steps,
                         max_grad_norm=args.adam_max_grad_norm)
 
+
     optimizers = [get_optimizer(stage.stage_module)]
     if dual_pipelines:
         optimizers.append(get_optimizer(stage.up_pipe_stage.stage_module))
+
+    if interleaved_pipelines:
+        for stage in stage.interleaved_stages:
+            optimizers.append(get_optimizer(stage.stage_module))
+
 
     if not is_ngd_training:
         unused_keys = ['ngd_learning_rate', 'ngd_max_grad_norm', 'damping']

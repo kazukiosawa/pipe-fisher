@@ -24,6 +24,7 @@ PIPELINE_1F1B = '1f1b'
 PIPELINE_GPIPE = 'gpipe'
 PIPELINE_GPIPE_NGD = 'gpipe_ngd'
 PIPELINE_CHIMERA = 'chimera'
+PIPELINE_INTER = 'interleave'
 
 
 class StageModule(nn.Module):
@@ -59,6 +60,7 @@ class PipelineStage:
                  recompute: bool = False,
                  is_up_pipe: bool = False,
                  up_pipe_stage=None,
+                 interleaved_stages=None,
                  nvtx_tag=''):
         assert dist.is_initialized(), 'torch.distributed needs to be initialized.'
         assert num_stages > 1, 'num_stages has to be > 1.'
@@ -79,6 +81,8 @@ class PipelineStage:
         if not self.is_up_pipe and self.pipeline_method == PIPELINE_CHIMERA:
             assert up_pipe_stage is not None, 'Up pipeline should be created.'
         self.up_pipe_stage = up_pipe_stage
+        self.interleaved_stages = interleaved_stages
+        self.chunks = len(interleaved_stages) + 1
         self.tag = 2 if is_up_pipe else 1
         self.nvtx_tag = nvtx_tag
 
@@ -183,6 +187,30 @@ class PipelineStage:
         start_send_threads(self.forward_send_queues, self.next_rank)
         start_recv_threads(self.backward_recv_queues, self.next_rank, self.sizes_for_next_stage)
         start_send_threads(self.backward_send_queues, self.prev_rank)
+
+    def start_interleaved_pipeline_comm_threads(self, num_iterations):
+        def start_recv_threads(recv_queues, src_rank, tensor_shapes, tag):
+            for key, queue in recv_queues.items():
+                start_comm_thread(self.recv_comm_thread,
+                                  dict(num_iterations=num_iterations,
+                                       queue=queue,
+                                       src_rank=src_rank,
+                                       tag=tag,
+                                       tensor_shape=self.batch_sizes + tensor_shapes[key],
+                                       device=self.device))
+
+        def start_send_threads(queues, dst_rank, tag):
+            for queue in queues.values():
+                start_comm_thread(self.send_comm_thread,
+                                  dict(num_iterations=num_iterations,
+                                       queue=queue,
+                                       dst_rank=dst_rank,
+                                       tag=tag))
+
+        start_recv_threads(self.forward_recv_queues, self.prev_rank, self.sizes_from_prev_stage, self.stage_id)
+        start_send_threads(self.forward_send_queues, self.next_rank, self.stage_id+1)
+        start_recv_threads(self.backward_recv_queues, self.next_rank, self.sizes_for_next_stage, self.stage_id+1)
+        start_send_threads(self.backward_send_queues, self.prev_rank, self.stage_id)
 
     def send_outputs_to_queue(self, key, tensor):
         self.forward_send_queues[key].add(tensor)
@@ -321,6 +349,8 @@ class PipelineStage:
         kwargs = dict(data_iterator=data_iterator, num_micro_batches=num_micro_batches, no_sync_grad=no_sync_grad)
         if pipeline_method == PIPELINE_1F1B:
             _call_pipeline = self._call_1f1b_pipeline
+        elif pipeline_method == PIPELINE_INTER:
+            _call_pipeline = self._call_interleaved_1f1b_pipeline
         elif pipeline_method == PIPELINE_GPIPE:
             _call_pipeline = self._call_gpipe_pipeline
         elif pipeline_method == PIPELINE_GPIPE_NGD:
@@ -463,6 +493,25 @@ class PipelineStage:
     def _call_1f1b_pipeline(self, data_iterator: Iterator, num_micro_batches, no_sync_grad=False):
         """
         1F1B
+        """
+        num_warmup_steps = self.num_stages - self.stage_id - 1
+
+        for _ in range(num_warmup_steps):
+            self.call_forward(next(data_iterator))
+        for _ in range(num_micro_batches - num_warmup_steps - 1):
+            self.call_forward(next(data_iterator))
+            self.call_backward()
+        self.call_forward(next(data_iterator))
+        for _ in range(num_warmup_steps):
+            self.call_backward()
+        self.call_backward()
+        
+        if self.is_distributed and not no_sync_grad:
+            self.sync_grad()
+
+    def _call_interleaved_1f1b_pipeline(self, data_iterator: Iterator, num_micro_batches, no_sync_grad=False):
+        """
+        Interleaved 1F1B
         """
         num_warmup_steps = self.num_stages - self.stage_id - 1
 
