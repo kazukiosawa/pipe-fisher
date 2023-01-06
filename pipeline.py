@@ -59,8 +59,9 @@ class PipelineStage:
                  pipeline_method: str = None,
                  recompute: bool = False,
                  is_up_pipe: bool = False,
+                 chunks: int = None,
                  up_pipe_stage=None,
-                 interleaved_stages=None,
+                 interleaved_stages: List = [],
                  nvtx_tag=''):
         assert dist.is_initialized(), 'torch.distributed needs to be initialized.'
         assert num_stages > 1, 'num_stages has to be > 1.'
@@ -82,7 +83,7 @@ class PipelineStage:
             assert up_pipe_stage is not None, 'Up pipeline should be created.'
         self.up_pipe_stage = up_pipe_stage
         self.interleaved_stages = interleaved_stages
-        self.chunks = len(interleaved_stages) + 1
+        self.chunks = chunks
         self.tag = 2 if is_up_pipe else 1
         self.nvtx_tag = nvtx_tag
 

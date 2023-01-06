@@ -123,10 +123,11 @@ def train_one_epoch(epoch, step, num_steps_for_this_epoch):
         stage.up_pipe_stage.start_comm_threads(num_p2p_comm)
         stage.up_pipe_stage.stage_module.train()
 
+    print("Interleaved_stages is list: ", isinstance(stage.interleaved_stages, list), len(stage.interleaved_stages))
     if interleaved_pipelines:
-        for stage in stage.interleaved_stages:
-            stage.start_interleaved_pipeline_comm_threads(num_p2p_comm)
-            stage.stage_module.train()
+        for inter_stage in stage.interleaved_stages:
+            inter_stage.start_interleaved_pipeline_comm_threads(num_p2p_comm)
+            inter_stage.stage_module.train()
 
     train_iterator = iter(train_loader)
     train_iterator_for_up_pipe = iter(train_loader_for_up_pipe) if dual_pipelines else None
@@ -296,6 +297,7 @@ if __name__ == "__main__":
     
     dual_pipelines = args.pipeline_method == PIPELINE_CHIMERA
     interleaved_pipelines = args.pipeline_method == PIPELINE_INTER
+    print("interleaved: ", interleaved_pipelines)
     if interleaved_pipelines:
         assert chunks > 1
         assert num_stages % chunks == 0
@@ -315,14 +317,15 @@ if __name__ == "__main__":
     def rank_to_stage(_rank, down_pipe=True):
         if down_pipe and chunks==1:
             return _rank // num_ranks_per_stage
-        elif down_pipe and chunks>1:
-            stages_per_chunk = num_stages // chunks
-            stages = []
-            for _chunk in range(chunks):
-                stages.append(_rank // num_ranks_per_stage + stages_per_chunk * _chunk)
-            return stages
         else:
             return (world_size - 1 - _rank) // num_ranks_per_stage
+
+    def rank_to_stages(_rank, down_pipe=True):
+        stages_per_chunk = num_stages // chunks
+        stages = []
+        for _chunk in range(chunks):
+            stages.append(_rank // num_ranks_per_stage + stages_per_chunk * _chunk)
+        return stages
 
     stage_to_ranks = {_stage_id: [] for _stage_id in range(num_stages)}
 
@@ -365,11 +368,12 @@ if __name__ == "__main__":
                              is_up_pipe=not down_pipe,
                              up_pipe_stage=get_pipeline_stage(
                                  down_pipe=False) if down_pipe and dual_pipelines else None,
-                             interleaved_stages=None,
+                             interleaved_stages=[],
+                             chunks=chunks,
                              nvtx_tag='' if down_pipe else auto_schedule.TAG_UP_PIPE)
 
     def get_interleaved_pipeline_stages(down_pipe=True):
-        stage_ids = rank_to_stage(rank, down_pipe=down_pipe)
+        stage_ids = rank_to_stages(rank, down_pipe=down_pipe)
         rank_interval = num_ranks_per_stage if down_pipe else -num_ranks_per_stage
         stages = []
         for i, stage_id in enumerate(stage_ids):
@@ -377,20 +381,21 @@ if __name__ == "__main__":
                 stage_module = get_stage_bert_for_pretraining(stage_id,
                                                               num_stages,
                                                               bert_config).to(device)
-                stage = PipelineStage(stage_id=stage_id,
-                                      num_stages=num_stages,
-                                      stage_module=stage_module,
-                                      batch_sizes=(micro_batch_size, max_seq_length),
-                                      pipeline_method=args.pipeline_method,
-                                      recompute=recompute,
-                                      prev_rank=(rank-rank_interval+world_size)%world_size if stage_id > 0 else None,
-                                      next_rank=(rank+rank_interval)%world_size if stage_id < num_stages-1 else None,
-                                      grad_sync_group=grad_sync_groups[stage_id],
-                                      is_up_pipe=not down_pipe,
-                                      up_pipe_stage=None,
-                                      interleaved_stages=None,
-                                      nvtx_tag='' if down_pipe else auto_schedule.TAG_UP_PIPE)
-                stages.append(stage)
+                inter_stage = PipelineStage(stage_id=stage_id,
+                                            num_stages=num_stages,
+                                            stage_module=stage_module,
+                                            batch_sizes=(micro_batch_size, max_seq_length),
+                                            pipeline_method=args.pipeline_method,
+                                            recompute=recompute,
+                                            prev_rank=(rank-rank_interval+world_size)%world_size if stage_id > 0 else None,
+                                            next_rank=(rank+rank_interval)%world_size if stage_id < num_stages-1 else None,
+                                            grad_sync_group=grad_sync_groups[stage_id],
+                                            is_up_pipe=not down_pipe,
+                                            up_pipe_stage=None,
+                                            interleaved_stages=[],
+                                            chunks=chunks,
+                                            nvtx_tag='' if down_pipe else auto_schedule.TAG_UP_PIPE)
+                stages.append(inter_stage)
 
         first_stage_id = stage_ids[0]
         stage_module = get_stage_bert_for_pretraining(first_stage_id,
@@ -408,13 +413,15 @@ if __name__ == "__main__":
                              is_up_pipe=not down_pipe,
                              up_pipe_stage=None,
                              interleaved_stages=stages,
+                             chunks=chunks,
                              nvtx_tag='' if down_pipe else auto_schedule.TAG_UP_PIPE)
 
-
-    if interleaved_pipelines:
-        stage = get_interleaved_pipeline_stages()
-    else
-        stage = get_pipeline_stage()
+    stage = get_interleaved_pipeline_stages()
+    #stage = get_pipeline_stage()
+    #if interleaved_pipelines:
+    #    stage = get_interleaved_pipeline_stages()
+    #else:
+    #    stage = get_pipeline_stage()
 
     is_stage_master = rank % num_ranks_per_stage == 0
 
