@@ -513,20 +513,50 @@ class PipelineStage:
         """
         Interleaved 1F1B
         """
-        num_warmup_steps = self.num_stages - self.stage_id - 1
+        num_micro_batches = num_micro_batches*self.chunks
+        pipeline_parallel_size = self.num_stages // self.chunks
+        pipeline_parallel_rank = self.stage_id % pipeline_parallel_size
+
+        num_warmup_steps = (pipeline_parallel_size - pipeline_parallel_rank - 1) * 2
+        num_warmup_steps += (self.chunks - 1) * pipeline_parallel_size
+
+        forward_counter = 0
+        backward_counter = 0
 
         for _ in range(num_warmup_steps):
-            self.call_forward(next(data_iterator))
-        for _ in range(num_micro_batches - num_warmup_steps - 1):
-            self.call_forward(next(data_iterator))
-            self.call_backward()
-        self.call_forward(next(data_iterator))
+            forward_counter += 1
+            forward_chunk_id = (forward_counter // pipeline_parallel_size) % self.chunks
+            if forward_chunk_id == 0:
+                self.call_forward(next(data_iterator))
+            else:
+                self.interleaved_stages[forward_chunk_id-1].call_forward(next(data_iterator))
+        for _ in range(num_micro_batches - num_warmup_steps):
+            forward_counter += 1
+            forward_chunk_id = (forward_counter // pipeline_parallel_size) % self.chunks
+            if forward_chunk_id == 0:
+                self.call_forward(next(data_iterator))
+            else:
+                self.interleaved_stages[forward_chunk_id-1].call_forward(next(data_iterator))
+
+            backward_counter += 1
+            backward_chunk_id = self.chunks - (backward_counter // pipeline_parallel_size) % self.chunks - 1
+            if backward_chunk_id == 0:
+                self.call_backward()
+            else:
+                self.interleaved_stages[backward_chunk_id-1].call_backward()
+
         for _ in range(num_warmup_steps):
-            self.call_backward()
-        self.call_backward()
+            backward_counter += 1
+            backward_chunk_id = self.chunks - (backward_counter // pipeline_parallel_size) % self.chunks - 1
+            if backward_chunk_id == 0:
+                self.call_backward()
+            else:
+                self.interleaved_stages[backward_chunk_id-1].call_backward()
         
         if self.is_distributed and not no_sync_grad:
             self.sync_grad()
+            for stage in self.interleaved_stages:
+                stage.sync_grad()
 
     def _call_gpipe_pipeline(self, data_iterator: Iterator, num_micro_batches, no_sync_grad=False):
         """
