@@ -55,6 +55,7 @@ class PipelineStage:
                  batch_sizes: Tuple[int, ...],
                  prev_rank: int = None,
                  next_rank: int = None,
+                 rank: int = None,
                  grad_sync_group: dist.ProcessGroup = None,
                  pipeline_method: str = None,
                  recompute: bool = False,
@@ -73,6 +74,7 @@ class PipelineStage:
         self.input_output_queue: Deque[Tuple[OrderedDict[str, Tensor], OrderedDict[str, Tensor]]] = deque()
         self.prev_rank = prev_rank
         self.next_rank = next_rank
+        self.rank = rank
         self.grad_sync_group = grad_sync_group
         self.device = next(stage_module.parameters()).device
         self.total_loss = 0.
@@ -212,6 +214,10 @@ class PipelineStage:
         start_send_threads(self.forward_send_queues, self.next_rank, self.stage_id+1)
         start_recv_threads(self.backward_recv_queues, self.next_rank, self.sizes_for_next_stage, self.stage_id+1)
         start_send_threads(self.backward_send_queues, self.prev_rank, self.stage_id)
+        #start_recv_threads(self.forward_recv_queues, self.prev_rank, self.sizes_from_prev_stage, 1)
+        #start_send_threads(self.forward_send_queues, self.next_rank, 1)
+        #start_recv_threads(self.backward_recv_queues, self.next_rank, self.sizes_for_next_stage, 1)
+        #start_send_threads(self.backward_send_queues, self.prev_rank, 1)
 
     def send_outputs_to_queue(self, key, tensor):
         self.forward_send_queues[key].add(tensor)
@@ -524,6 +530,7 @@ class PipelineStage:
         forward_counter = 0
         backward_counter = 0
 
+        print("stage_id", self.stage_id, "self, P and N ranks: ", self.rank, self.prev_rank, self.next_rank, "warmup_steps: ", num_warmup_steps, "num_micro_batches: ", num_micro_batches, flush=True)
         for _ in range(num_warmup_steps):
             forward_counter += 1
             forward_chunk_id = (forward_counter // pipeline_parallel_size) % self.chunks
@@ -531,6 +538,7 @@ class PipelineStage:
                 self.call_forward(next(data_iterator))
             else:
                 self.interleaved_stages[forward_chunk_id-1].call_forward(next(data_iterator))
+            print("stage_id", self.stage_id, "self, P and N ranks: ", self.rank, self.prev_rank, self.next_rank, "fcounter: ", forward_counter, "bcounter: ", backward_counter, flush=True)
         for _ in range(num_micro_batches - num_warmup_steps):
             forward_counter += 1
             forward_chunk_id = (forward_counter // pipeline_parallel_size) % self.chunks
@@ -545,6 +553,7 @@ class PipelineStage:
                 self.call_backward()
             else:
                 self.interleaved_stages[backward_chunk_id-1].call_backward()
+            print("stage_id", self.stage_id, "self, P and N ranks: ", self.rank, self.prev_rank, self.next_rank, "fcounter: ", forward_counter, "bcounter: ", backward_counter, flush=True)
 
         for _ in range(num_warmup_steps):
             backward_counter += 1
@@ -553,11 +562,13 @@ class PipelineStage:
                 self.call_backward()
             else:
                 self.interleaved_stages[backward_chunk_id-1].call_backward()
+            print("stage_id", self.stage_id, "P and N ranks: ", self.prev_rank, self.next_rank, "fcounter: ", forward_counter, "bcounter: ", backward_counter, flush=True)
         
         if self.is_distributed and not no_sync_grad:
             self.sync_grad()
             for stage in self.interleaved_stages:
                 stage.sync_grad()
+            print("stage_id", self.stage_id, "P and N ranks: ", self.prev_rank, self.next_rank, "synchronization", flush=True)
 
     def _call_gpipe_pipeline(self, data_iterator: Iterator, num_micro_batches, no_sync_grad=False):
         """

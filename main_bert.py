@@ -24,6 +24,8 @@ from bert_model import get_stage_bert_for_pretraining
 import auto_schedule
 
 import asdfghjkl as asdl
+#import sys
+#sys.stdout.flush()
 
 try:
     import wandb
@@ -129,13 +131,16 @@ def train_one_epoch(epoch, step, num_steps_for_this_epoch):
             inter_stage.start_interleaved_pipeline_comm_threads(num_p2p_comm)
             inter_stage.stage_module.train()
 
-    print("Interleaved_stages is list: ", isinstance(stage.interleaved_stages, list), len(stage.interleaved_stages))
+    print("Interleaved_stages is list: ", isinstance(stage.interleaved_stages, list), len(stage.interleaved_stages), flush=True)
 
     train_iterator = iter(train_loader)
+    print("call pipeline-3", flush=True)
     train_iterator_for_up_pipe = iter(train_loader_for_up_pipe) if dual_pipelines else None
 
+    print("call pipeline-2", flush=True)
     save_cxt = nullcontext()
     save_cxt_up_pipe = nullcontext()
+    print("call pipeline-1", flush=True)
     if is_ngd_training:
         save_cxt = asdl.save_inputs_outgrads(stage.stage_module,
                                              ignore_modules=ngd.ignore_modules)
@@ -143,6 +148,7 @@ def train_one_epoch(epoch, step, num_steps_for_this_epoch):
             save_cxt_up_pipe = asdl.save_inputs_outgrads(stage.up_pipe_stage.stage_module,
                                                          ignore_modules=ngd_up_pipe.ignore_modules)
 
+    print("call pipeline0", flush=True)
     with save_cxt as cxt:
         with save_cxt_up_pipe as cxt_up_pipe:
             if is_ngd_training:
@@ -155,6 +161,7 @@ def train_one_epoch(epoch, step, num_steps_for_this_epoch):
                 for optimizer in optimizers:
                     optimizer.zero_grad()
 
+                print("call pipeline1", flush=True)
                 # 1 pipeline iteration
                 if ngd_schedule is not None:
                     if step+i == 0:
@@ -170,9 +177,11 @@ def train_one_epoch(epoch, step, num_steps_for_this_epoch):
                                                              up_side_down=not first_half and dual_pipelines)
                 else:
                     dist.barrier()
+                    print("call pipeline2", flush=True)
                     if args.record_ngd:
                         loss = call_one_ngd_step(train_iterator, cxt, train_iterator_for_up_pipe, cxt_up_pipe)
                     else:
+                        print("call pipeline3", flush=True)
                         loss = stage.call_pipeline(train_iterator,
                                                    num_micro_batches=num_micro_batches_per_step,
                                                    data_iterator_for_up_pipe=train_iterator_for_up_pipe,
@@ -366,6 +375,7 @@ if __name__ == "__main__":
                              recompute=recompute,
                              prev_rank=rank-rank_interval if stage_id > 0 else None,
                              next_rank=rank+rank_interval if stage_id < num_stages-1 else None,
+                             rank=rank,
                              grad_sync_group=grad_sync_groups[stage_id],
                              is_up_pipe=not down_pipe,
                              up_pipe_stage=get_pipeline_stage(
@@ -376,6 +386,7 @@ if __name__ == "__main__":
 
     def get_interleaved_pipeline_stages(down_pipe=True):
         stage_ids = rank_to_stages(rank, down_pipe=down_pipe)
+        print("rank: ", rank, "stages: ", stage_ids, flush=True)
         rank_interval = num_ranks_per_stage if down_pipe else -num_ranks_per_stage
         stages = []
         for i, stage_id in enumerate(stage_ids):
@@ -391,6 +402,7 @@ if __name__ == "__main__":
                                             recompute=recompute,
                                             prev_rank=(rank-rank_interval+world_size)%world_size if stage_id > 0 else None,
                                             next_rank=(rank+rank_interval)%world_size if stage_id < num_stages-1 else None,
+                                            rank=rank,
                                             grad_sync_group=grad_sync_groups[stage_id],
                                             is_up_pipe=not down_pipe,
                                             up_pipe_stage=None,
@@ -414,6 +426,7 @@ if __name__ == "__main__":
                              recompute=recompute,
                              prev_rank=(rank-rank_interval+world_size)%world_size if first_stage_id > 0 else None,
                              next_rank=(rank+rank_interval)%world_size if first_stage_id < num_stages-1 else None,
+                             rank=rank,
                              grad_sync_group=grad_sync_groups[first_stage_id],
                              is_up_pipe=not down_pipe,
                              up_pipe_stage=None,
@@ -421,8 +434,6 @@ if __name__ == "__main__":
                              chunks=chunks,
                              nvtx_tag='' if down_pipe else auto_schedule.TAG_UP_PIPE)
 
-    #stage = get_interleaved_pipeline_stages()
-    #stage = get_pipeline_stage()
     if interleaved_pipelines:
         stage = get_interleaved_pipeline_stages()
     else:
