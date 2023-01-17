@@ -114,7 +114,6 @@ def main():
 
 def train_one_epoch(epoch, step, num_steps_for_this_epoch):
 
-    print("return stage len 2: ", len(stage.interleaved_stages))
     num_p2p_comm = num_steps_for_this_epoch * num_micro_batches_per_step
     if interleaved_pipelines:
         stage.start_interleaved_pipeline_comm_threads(num_p2p_comm)
@@ -131,16 +130,12 @@ def train_one_epoch(epoch, step, num_steps_for_this_epoch):
             inter_stage.start_interleaved_pipeline_comm_threads(num_p2p_comm)
             inter_stage.stage_module.train()
 
-    print("Interleaved_stages is list: ", isinstance(stage.interleaved_stages, list), len(stage.interleaved_stages), flush=True)
 
     train_iterator = iter(train_loader)
-    print("call pipeline-3", flush=True)
     train_iterator_for_up_pipe = iter(train_loader_for_up_pipe) if dual_pipelines else None
 
-    print("call pipeline-2", flush=True)
     save_cxt = nullcontext()
     save_cxt_up_pipe = nullcontext()
-    print("call pipeline-1", flush=True)
     if is_ngd_training:
         save_cxt = asdl.save_inputs_outgrads(stage.stage_module,
                                              ignore_modules=ngd.ignore_modules)
@@ -148,7 +143,6 @@ def train_one_epoch(epoch, step, num_steps_for_this_epoch):
             save_cxt_up_pipe = asdl.save_inputs_outgrads(stage.up_pipe_stage.stage_module,
                                                          ignore_modules=ngd_up_pipe.ignore_modules)
 
-    print("call pipeline0", flush=True)
     with save_cxt as cxt:
         with save_cxt_up_pipe as cxt_up_pipe:
             if is_ngd_training:
@@ -161,7 +155,6 @@ def train_one_epoch(epoch, step, num_steps_for_this_epoch):
                 for optimizer in optimizers:
                     optimizer.zero_grad()
 
-                print("call pipeline1", flush=True)
                 # 1 pipeline iteration
                 if ngd_schedule is not None:
                     if step+i == 0:
@@ -177,11 +170,9 @@ def train_one_epoch(epoch, step, num_steps_for_this_epoch):
                                                              up_side_down=not first_half and dual_pipelines)
                 else:
                     dist.barrier()
-                    print("call pipeline2", flush=True)
                     if args.record_ngd:
                         loss = call_one_ngd_step(train_iterator, cxt, train_iterator_for_up_pipe, cxt_up_pipe)
                     else:
-                        print("call pipeline3", flush=True)
                         loss = stage.call_pipeline(train_iterator,
                                                    num_micro_batches=num_micro_batches_per_step,
                                                    data_iterator_for_up_pipe=train_iterator_for_up_pipe,
@@ -308,7 +299,6 @@ if __name__ == "__main__":
     
     dual_pipelines = args.pipeline_method == PIPELINE_CHIMERA
     interleaved_pipelines = args.pipeline_method == PIPELINE_INTER
-    print("interleaved: ", interleaved_pipelines, "chimera: ", dual_pipelines)
     if interleaved_pipelines:
         assert chunks > 1
         assert num_stages % chunks == 0
@@ -326,7 +316,7 @@ if __name__ == "__main__":
     is_distributed = num_replicas > 1
 
     def rank_to_stage(_rank, down_pipe=True):
-        if down_pipe and chunks==1:
+        if down_pipe:
             return _rank // num_ranks_per_stage
         else:
             return (world_size - 1 - _rank) // num_ranks_per_stage
@@ -386,7 +376,6 @@ if __name__ == "__main__":
 
     def get_interleaved_pipeline_stages(down_pipe=True):
         stage_ids = rank_to_stages(rank, down_pipe=down_pipe)
-        print("rank: ", rank, "stages: ", stage_ids, flush=True)
         rank_interval = num_ranks_per_stage if down_pipe else -num_ranks_per_stage
         stages = []
         for i, stage_id in enumerate(stage_ids):
@@ -411,7 +400,6 @@ if __name__ == "__main__":
                                             nvtx_tag='' if down_pipe else auto_schedule.TAG_UP_PIPE)
                 stages.append(inter_stage)
 
-        print("inter stage len:", len(stages))
 
         first_stage_id = stage_ids[0]
         stage_module = get_stage_bert_for_pretraining(first_stage_id,
@@ -439,7 +427,6 @@ if __name__ == "__main__":
     else:
         stage = get_pipeline_stage()
 
-    print("return stage len: ", len(stage.interleaved_stages))
     is_stage_master = rank % num_ranks_per_stage == 0
 
     # Prepare BERT dataset
@@ -483,7 +470,6 @@ if __name__ == "__main__":
         total_num_samples = num_steps * total_num_samples_per_step
         num_epochs = math.ceil(total_num_samples / len(train_dataset))
 
-    print("return stage len 1.1: ", len(stage.interleaved_stages))
     ngd_schedule = None
     first_half = rank_to_stage(rank) // (num_stages // 2) == 0
     if args.ngd_schedule_path is not None:
@@ -500,7 +486,6 @@ if __name__ == "__main__":
         else:
             ngd_schedule = ngd_schedules[rank_to_stage(rank)]
 
-    print("return stage len 1.2: ", len(stage.interleaved_stages))
     # Prepare natural gradient preconditioners
     ngd = ngd_up_pipe = None
     kfac_params = []
@@ -547,7 +532,6 @@ if __name__ == "__main__":
             ngd_up_pipe = get_ngd(stage.up_pipe_stage.stage_module, nvtx_tag=auto_schedule.TAG_UP_PIPE, down_pipe=False)
             register_params(ngd_up_pipe)
 
-    print("return stage len 1.2: ", len(stage.interleaved_stages))
     # Prepare optimizers
     def get_optimizer(module):
         ngd_decay_param_group = {'params': [], 'weight_decay': args.weight_decay, 'b2': -1,
@@ -582,17 +566,14 @@ if __name__ == "__main__":
                         t_total=num_steps,
                         max_grad_norm=args.adam_max_grad_norm)
 
-    print("return stage len 1.4: ", len(stage.interleaved_stages))
 
     optimizers = [get_optimizer(stage.stage_module)]
-    print("return stage len 1.5: ", len(stage.interleaved_stages))
     if dual_pipelines:
         optimizers.append(get_optimizer(stage.up_pipe_stage.stage_module))
 
     if interleaved_pipelines:
         for inter_stage in stage.interleaved_stages:
             optimizers.append(get_optimizer(inter_stage.stage_module))
-    print("return stage len 1.6: ", len(stage.interleaved_stages))
 
 
     if not is_ngd_training:
