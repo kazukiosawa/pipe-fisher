@@ -4,7 +4,8 @@
 model=bert-large
 #pipeline='gpipe'
 #pipeline='1f1b'
-pipeline='chimera'
+#pipeline='chimera'
+pipeline='interleave'
 stages=8
 ngpus=8
 microbs=32
@@ -44,4 +45,4 @@ python scripts/plot_cuda_timeline.py \
     --title $name \
     --num_replicas 1 \
 
-imgcat $fig_path
+#imgcat $fig_path

@@ -3,15 +3,22 @@
 #SBATCH --ntasks=8
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=12
-#SBATCH --time=00:02:00
+#SBATCH --time=00:05:00
+#SBATCH --partition=normal
+#SBATCH --constraint=gpu
+#SBATCH --account=g34
+#SBATCH --output=interleave6.txt
 
+module load daint-gpu
+conda activate py38_kfac
 export MASTER_ADDR=$(hostname)
 
 #model=bert-base
 model=bert-large
 #pipeline='gpipe'
 #pipeline='1f1b'
-pipeline='chimera'
+#pipeline='chimera'
+pipeline='interleave'
 stages=8
 ngpus=8
 microbs=32
@@ -35,3 +42,4 @@ srun --wait=0 scripts/nsys_wrap.sh \
             --p2p_backend 'gloo' \
             --collective_backend 'nccl' \
             --profile \
+	    --chunks 2 \
