@@ -1,5 +1,7 @@
 # PipeFisher
 
+The implementation of pipeline-parallel training with K-FAC optimizer (PipeFisher) in PyTorch used in [PipeFisher: Efficient Training of Large Language Models Using Pipelining and Fisher Information Matrices](https://arxiv.org/abs/2211.14133) (to appear at MLSys 2023).
+
 ## Setup
 
 ### Data preparation
